@@ -56,3 +56,5 @@ Việc còn nợ, tạm dừng ngày 2026-10-01 để xử lý task khác. Đán
 - [ ] Plan 6: test lifespan wiring (requeue khi khởi động, hủy task nền khi tắt).
 - [ ] Plan 6: xóa thư mục `mkdtemp` của test và ghi chú `QC_SKIP_DB`.
 - [ ] Ghi nhận: lần đầu publish của dự án cũ (chưa provision) tạo rồi xóa stub cho chính loại đang publish (vô hại).
+- [ ] Plan 6: khi commit lỗi mơ hồ (server đã commit nhưng client nhận lỗi), bước hoàn tác có thể xóa file của tài liệu đã publish; kiểm tra DocumentVersion trong session mới trước khi hoàn tác.
+- [ ] Theo dõi giới hạn tỉ lệ nén 50× của file Office: file xlsx lớn, lặp nhiều có thể bị từ chối; điều chỉnh nếu người dùng gặp.

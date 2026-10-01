@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import (  # noqa: E402
 )
 from sqlalchemy.pool import NullPool  # noqa: E402
 
+from app.agent.analyzer import Analyzer  # noqa: E402
 from app.core.config import Settings  # noqa: E402
 from app.db import models  # noqa: E402,F401  - registers tables on Base.metadata
 from app.db.base import Base  # noqa: E402
@@ -71,8 +72,8 @@ async def db(db_sessionmaker: async_sessionmaker[AsyncSession]) -> AsyncIterator
 
 @pytest.fixture
 def make_app(db_sessionmaker: async_sessionmaker[AsyncSession]) -> Callable[..., FastAPI]:
-    def _make(**overrides: Any) -> FastAPI:
-        return create_app(Settings(**overrides))  # type: ignore[call-arg]
+    def _make(*, analyzer: Analyzer | None = None, **overrides: Any) -> FastAPI:
+        return create_app(Settings(**overrides), analyzer=analyzer)  # type: ignore[call-arg]
 
     return _make
 

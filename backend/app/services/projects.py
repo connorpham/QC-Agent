@@ -3,10 +3,14 @@ import uuid
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import Settings
 from app.core.slugs import slugify, unique_slug
 from app.db.models import Project, ProjectMember, User
+from app.ingestion.taxonomy import Taxonomy
 from app.schemas.projects import MemberIn, MemberOut, ProjectSettings
 from app.services import audit
+from app.services.workspace import ensure_workspace
+from app.storage.select import backend_for, localfs_binding
 
 
 class MemberValidationError(Exception):
@@ -16,20 +20,33 @@ class MemberValidationError(Exception):
 
 
 async def create_project(
-    db: AsyncSession, *, name: str, client_name: str | None, creator: User
+    db: AsyncSession,
+    *,
+    name: str,
+    client_name: str | None,
+    creator: User,
+    settings: Settings,
+    taxonomy: Taxonomy,
 ) -> Project:
+    """Create the project, bind it to local storage under its slug and provision the workspace
+    (folders, stubs, reports) before committing. A storage failure raises ``StorageError`` and
+    nothing is committed."""
     base = slugify(name)
     taken = set((await db.scalars(select(Project.slug).where(Project.slug.startswith(base)))).all())
+    slug = unique_slug(base, taken)
     project = Project(
-        slug=unique_slug(base, taken),
+        slug=slug,
         name=name,
         client_name=client_name,
         settings=ProjectSettings().model_dump(),
+        storage=localfs_binding(slug),
         created_by=creator.id,
     )
     db.add(project)
     await db.flush()
     db.add(ProjectMember(project_id=project.id, user_id=creator.id, role="owner"))
+    backend = backend_for(project.storage, settings)
+    await ensure_workspace(db, project=project, backend=backend, taxonomy=taxonomy, actor=creator)
     await audit.record(
         db,
         "project.create",

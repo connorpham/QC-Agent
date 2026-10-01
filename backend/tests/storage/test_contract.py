@@ -14,6 +14,8 @@ BAD_PATHS = [
     ".",
     "a\\b.txt",
     ".versions/x",
+    ".Versions/x",
+    ".TRASH/x",
 ]
 
 

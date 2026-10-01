@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
-from app.api.routes import auth, health
+from app.api.routes import auth, health, users
 from app.core.config import Settings, get_settings
 from app.core.ratelimit import SlidingWindowLimiter
 from app.db.session import dispose_engine, init_engine, is_initialised
@@ -44,4 +44,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(health.router, prefix=API_PREFIX)
     app.include_router(auth.router, prefix=API_PREFIX)
+    app.include_router(users.router, prefix=API_PREFIX)
     return app

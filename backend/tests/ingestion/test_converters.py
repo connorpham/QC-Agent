@@ -127,3 +127,61 @@ def test_csv_becomes_table_and_is_capped(tmp_path: Path) -> None:
 def test_unknown_extension(tmp_path: Path) -> None:
     with pytest.raises(ConversionError, match="cannot be converted"):
         convert_file(tmp_path / "x.exe", "exe")
+
+
+def _inflate_declared_size(path: Path, entry: bytes, declared: int) -> None:
+    """Rewrite one entry's declared uncompressed size in the central directory (a zip bomb
+    announces its size there; the bytes themselves stay small)."""
+    import struct
+
+    data = bytearray(path.read_bytes())
+    offset = 0
+    while (offset := data.find(b"PK\x01\x02", offset)) != -1:
+        name_len = struct.unpack_from("<H", data, offset + 28)[0]
+        if bytes(data[offset + 46 : offset + 46 + name_len]) == entry:
+            struct.pack_into("<I", data, offset + 24, declared)
+            path.write_bytes(bytes(data))
+            return
+        offset += 4
+    raise AssertionError(f"central directory entry for {entry!r} not found")
+
+
+def test_docx_with_oversized_declared_contents_is_rejected(tmp_path: Path) -> None:
+    path = make_docx(tmp_path / "bomb.docx", headings=[(1, "Title")], paragraphs=[EN_TEXT])
+    _inflate_declared_size(path, b"word/document.xml", 300 * 1024 * 1024)
+    with pytest.raises(ConversionError, match="^Document archive is too large to process.$"):
+        convert_file(path, "docx")
+
+
+def test_docx_with_too_many_entries_is_rejected(tmp_path: Path) -> None:
+    import zipfile
+
+    path = tmp_path / "many.docx"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        for i in range(10_000):
+            archive.writestr(f"p/{i}.xml", "")
+    with pytest.raises(ConversionError, match="^Document archive is too large to process.$"):
+        convert_file(path, "docx")
+
+
+@pytest.mark.parametrize("ext", ["docx", "xlsx", "pptx"])
+def test_ole_container_is_rejected_as_protected_or_legacy(tmp_path: Path, ext: str) -> None:
+    path = tmp_path / f"locked.{ext}"
+    path.write_bytes(bytes.fromhex("D0CF11E0A1B11AE1") + b"\x00" * 512)
+    with pytest.raises(ConversionError) as excinfo:
+        convert_file(path, ext)
+    assert excinfo.value.message == (
+        "Document is password-protected or in a legacy format; save it as a regular "
+        ".docx/.xlsx/.pptx and upload again."
+    )
+
+
+def test_csv_parse_error_is_a_conversion_error_without_content(tmp_path: Path) -> None:
+    import csv
+
+    path = tmp_path / "huge.csv"
+    path.write_text("id,notes\n1," + "S" * (csv.field_size_limit() + 1) + "\n", encoding="utf-8")
+    with pytest.raises(ConversionError) as excinfo:
+        convert_file(path, "csv")
+    assert excinfo.value.message == "CSV file could not be parsed: Error"

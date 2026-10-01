@@ -43,7 +43,10 @@ class CsvConverter:
 
     def convert(self, path: Path) -> ConversionResult:
         text = decode_utf8(path)
-        rows = list(csv.reader(io.StringIO(text)))
+        try:
+            rows = list(csv.reader(io.StringIO(text)))
+        except csv.Error as exc:  # the message may quote content: report the class only
+            raise ConversionError(f"CSV file could not be parsed: {type(exc).__name__}") from exc
         rows = [row for row in rows if any(cell.strip() for cell in row)]
         if not rows:
             raise ConversionError("CSV file has no rows.")

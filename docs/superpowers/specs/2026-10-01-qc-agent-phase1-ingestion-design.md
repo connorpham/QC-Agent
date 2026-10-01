@@ -482,7 +482,7 @@ Users have `account_type` `internal` or `customer`; customer accounts can only h
 | `auth_sessions` | id, user_id, token_hash, mfa_verified, expires_at, revoked_at, ip, user_agent |
 | `storage_connections` | id, type (`localfs`/`sharepoint`/`gdrive`), name, config jsonb, secret_enc, is_default, is_active, created_by, created_at, updated_at |
 | `storage_migrations` (Plan 3c) | id, project_id, from_connection_id, to_connection_id, to_root, status (`running`/`succeeded`/`failed`), progress jsonb, error, started_by, started_at, finished_at |
-| `projects` | id, slug, name, client_name, storage_connection_id, storage_root jsonb, settings jsonb, created_by, archived_at |
+| `projects` | id, slug, name, client_name, storage jsonb (`{connection_id, root, provisioned_at}`, see 8.5), settings jsonb, created_by, archived_at |
 | `project_members` | project_id, user_id, role |
 | `uploads` | id, project_id, uploaded_by, repo_ref, created_at |
 | `upload_items` | id, upload_id, original_name, ext, size, sha256, staging_path, selected_doc_type, final_doc_type, title, intent (`new`/`version`), target_document_id, visibility, status, type_check, check_explanation, suggested_doc_type, conversion_meta jsonb, error |

@@ -61,3 +61,7 @@ Việc còn nợ, tạm dừng ngày 2026-10-01 để xử lý task khác. Đán
 - [ ] Ghi nhận: lần đầu publish của dự án cũ (chưa provision) tạo rồi xóa stub cho chính loại đang publish (vô hại).
 - [ ] Plan 6: khi commit lỗi mơ hồ (server đã commit nhưng client nhận lỗi), bước hoàn tác có thể xóa file của tài liệu đã publish; kiểm tra DocumentVersion trong session mới trước khi hoàn tác.
 - [ ] Theo dõi giới hạn tỉ lệ nén 50× của file Office: file xlsx lớn, lặp nhiều có thể bị từ chối; điều chỉnh nếu người dùng gặp.
+- [ ] Plan 5: 401 trong `useLoad` hiện Alert một nhịp trước khi chuyển về `/login`; bỏ qua set error khi status là 401.
+- [ ] Plan 5: tab trên trang dự án dùng `role="tablist"`/`role="tab"` nhưng thiếu tabpanel, `aria-controls` và điều hướng bằng phím mũi tên; hoàn thiện hoặc đổi sang button thường.
+- [ ] Plan 3b: thêm index hàm trên `(storage->>'connection_id', lower(storage->>'root'))` khi số dự án tăng.
+- [ ] Quy ước backend: một route commit một lần; các service gọi liên tiếp dùng chung transaction.

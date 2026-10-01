@@ -1,5 +1,6 @@
 from app.core.passwords import (
     MIN_PASSWORD_LENGTH,
+    burn_password_check,
     generate_temporary_password,
     hash_password,
     validate_new_password,
@@ -36,3 +37,8 @@ def test_temporary_password_is_long_and_random() -> None:
     first, second = generate_temporary_password(), generate_temporary_password()
     assert len(first) >= MIN_PASSWORD_LENGTH
     assert first != second
+
+
+def test_burn_password_check_returns_none_and_does_not_raise() -> None:
+    result = burn_password_check("anything")
+    assert result is None

@@ -27,6 +27,13 @@ def test_previous_step_is_accepted_two_steps_back_is_not() -> None:
     assert match_totp(secret, totp.at(NOW - timedelta(seconds=60)), now=NOW) is None
 
 
+def test_forward_step_is_accepted_two_steps_forward_is_not() -> None:
+    secret = new_totp_secret()
+    totp = pyotp.TOTP(secret)
+    assert match_totp(secret, totp.at(NOW + timedelta(seconds=30)), now=NOW) is not None
+    assert match_totp(secret, totp.at(NOW + timedelta(seconds=60)), now=NOW) is None
+
+
 def test_bad_codes_are_rejected() -> None:
     secret = new_totp_secret()
     assert match_totp(secret, "12345", now=NOW) is None
@@ -48,8 +55,11 @@ def test_provisioning_uri_names_issuer_and_account() -> None:
 
 def test_recovery_codes() -> None:
     codes = generate_recovery_codes()
+    secret = new_totp_secret()
     assert len(codes) == 10
     assert len(set(codes)) == 10
     assert all(is_recovery_code_format(c) for c in codes)
-    assert hash_recovery_code(codes[0]) == hash_recovery_code(f"  {codes[0].upper()} ")
+    normalized_code = f"  {codes[0].upper()} "
+    assert hash_recovery_code(codes[0], secret) == hash_recovery_code(normalized_code, secret)
+    assert hash_recovery_code(codes[0], secret) != hash_recovery_code(codes[0], new_totp_secret())
     assert is_recovery_code_format("123456") is False

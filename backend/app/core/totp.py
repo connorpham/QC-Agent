@@ -45,5 +45,5 @@ def generate_recovery_codes(count: int = 10) -> list[str]:
     return [f"{secrets.token_hex(4)}-{secrets.token_hex(4)}" for _ in range(count)]
 
 
-def hash_recovery_code(code: str) -> str:
-    return hashlib.sha256(_normalize_recovery(code).encode()).hexdigest()
+def hash_recovery_code(code: str, secret: str) -> str:
+    return hmac.new(secret.encode(), _normalize_recovery(code).encode(), hashlib.sha256).hexdigest()

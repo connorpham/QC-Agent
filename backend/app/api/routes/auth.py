@@ -111,9 +111,7 @@ async def mfa_verify(
     return me_response(ctx)
 
 
-@router.post(
-    "/change-password", status_code=204, dependencies=[Depends(auth_rate_limit)]
-)
+@router.post("/change-password", status_code=204, dependencies=[Depends(auth_rate_limit)])
 async def change_password_route(body: ChangePasswordRequest, ctx: MfaCtx, db: DbSession) -> None:
     try:
         await change_password(db, ctx, body.current_password, body.new_password)

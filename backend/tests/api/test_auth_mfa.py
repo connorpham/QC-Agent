@@ -28,9 +28,7 @@ async def test_enrol_and_confirm(client: AsyncClient, db: AsyncSession, settings
     assert enrol.status_code == 200
     secret = enrol.json()["secret"]
     assert "issuer=QC-Agent" in enrol.json()["otpauth_uri"]
-    confirm = await client.post(
-        "/api/v1/auth/mfa/confirm", json={"code": pyotp.TOTP(secret).now()}
-    )
+    confirm = await client.post("/api/v1/auth/mfa/confirm", json={"code": pyotp.TOTP(secret).now()})
     assert confirm.status_code == 200
     assert len(confirm.json()["recovery_codes"]) == 10
     me = (await client.get("/api/v1/auth/me")).json()

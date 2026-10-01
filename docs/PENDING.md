@@ -34,6 +34,6 @@ Việc còn nợ, tạm dừng ngày 2026-10-01 để xử lý task khác. Đán
 - [x] Spec v2 được duyệt (2026-10-01).
 - [x] Lập kế hoạch triển khai: `docs/superpowers/plans/2026-10-01-phase1-roadmap.md`.
 - [ ] Review Plan 0 và Plan 1, chọn cách thực thi (owner: Connor).
-- [ ] Thực thi Plan 1 (backend foundation). Cần Docker trước.
+- [x] Thực thi Plan 1 (backend foundation). Cần Docker trước.
 - [ ] Thực thi Plan 0, spike Agent SDK (cần API key): chạy song song, `setting_sources=[]`, `CLAUDE_CONFIG_DIR`, chi phí trên 10 tài liệu mẫu.
 - [ ] Thực thi Plan 0, spike lưu trữ (cần IT chuẩn bị site SharePoint và Shared Drive test): upload và phiên bản trên SharePoint (Graph) và Google Drive.

@@ -3,12 +3,20 @@
 Runs under a PostgreSQL advisory lock per project. Writes the original and the converted
 Markdown (with frontmatter) to storage, records storage version ids, creates or extends the
 document, removes an unchanged stub, regenerates the reports. Idempotent: an item that already
-has a document version is returned as-is.
+has a document version is returned as-is (checked under the lock).
+
+Storage is written before the caller commits. If anything fails after the first storage write,
+``publish_item`` puts storage back the way it found it (best effort) and re-raises: a new
+version's paths get the previous version's bytes again, a new document's paths are trashed and
+a trashed stub is restored. The reports are not re-rendered on failure (that would need the
+rolled-back session); the next successful publish regenerates them.
 """
 
 import asyncio
 import hashlib
+import logging
 import uuid
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
@@ -32,6 +40,8 @@ from app.services.workspace import (
     sha256_hex,
 )
 from app.storage.base import StorageBackend, StorageNotFound
+
+logger = logging.getLogger(__name__)
 
 CONTENT_TYPES = {
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -86,8 +96,53 @@ async def _taken_slugs(db: AsyncSession, project_id: uuid.UUID, doc_type: DocTyp
     )
 
 
+@dataclass
+class _StorageChanges:
+    """What one publish changed in storage, so a failure before commit can undo it."""
+
+    # path -> storage version id of the content it held before (None: unknown, leave it)
+    previous: dict[str, str | None] = field(default_factory=dict)
+    written: list[tuple[str, str]] = field(default_factory=list)  # (path, content type)
+    trashed_stub: tuple[str, bytes] | None = None
+
+    async def undo(self, backend: StorageBackend, document_id: uuid.UUID) -> None:
+        """Best effort; every step runs even if an earlier one fails. Logs ids and error
+        classes only."""
+        for path, content_type in reversed(self.written):
+            prior = self.previous.get(path)
+            try:
+                if path not in self.previous:
+                    await backend.move_to_trash(path)
+                elif prior is None:
+                    logger.error("No storage version to restore for document %s", document_id)
+                else:
+                    await backend.put_file(
+                        path, await backend.get_version(path, prior), content_type
+                    )
+            except Exception as exc:
+                logger.error(
+                    "Could not undo a storage write for document %s (%s)",
+                    document_id,
+                    type(exc).__name__,
+                )
+        if self.trashed_stub is not None:
+            path, data = self.trashed_stub
+            try:
+                await backend.put_file(path, data, "text/markdown")
+            except Exception as exc:
+                logger.error(
+                    "Could not restore the stub for document %s (%s)",
+                    document_id,
+                    type(exc).__name__,
+                )
+
+
 async def _remove_unchanged_stub(
-    db: AsyncSession, project: Project, doc_type: DocType, backend: StorageBackend
+    db: AsyncSession,
+    project: Project,
+    doc_type: DocType,
+    backend: StorageBackend,
+    changes: _StorageChanges,
 ) -> None:
     row = (
         await db.execute(
@@ -110,6 +165,7 @@ async def _remove_unchanged_stub(
     if current is None or sha256_hex(current) == version.sha256:
         if current is not None:
             await backend.move_to_trash(version.markdown_path)
+            changes.trashed_stub = (version.markdown_path, current)
         await db.delete(stub)
         await db.flush()
 
@@ -127,12 +183,12 @@ async def publish_item(
     now: datetime | None = None,
 ) -> DocumentVersion:
     moment = now or datetime.now(UTC)
+    await acquire_project_lock(db, project.id)
     existing = await db.scalar(
         select(DocumentVersion).where(DocumentVersion.upload_item_id == item.id)
     )
     if existing is not None:
         return existing
-    await acquire_project_lock(db, project.id)
     if not is_provisioned(project):
         await ensure_workspace(
             db, project=project, backend=backend, taxonomy=taxonomy, actor=uploader, now=moment
@@ -161,6 +217,14 @@ async def publish_item(
         )
         if current is not None and current.sha256 == item.sha256:
             raise NoChange()
+        changes = _StorageChanges()
+        if current is not None:
+            for path, storage_version in (
+                (current.original_path, current.original_storage_version),
+                (current.markdown_path, current.markdown_storage_version),
+            ):
+                if path is not None:
+                    changes.previous[path] = storage_version
         version = document.current_version + 1
     else:
         slug = unique_slug(title_slug(item.title), await _taken_slugs(db, project.id, doc_type))
@@ -178,6 +242,7 @@ async def publish_item(
         db.add(document)
         await db.flush()
         version = 1
+        changes = _StorageChanges()
 
     orig_path = original_path(doc_type, document.slug, item.ext)
     md_path = markdown_path(doc_type, document.slug)
@@ -198,26 +263,34 @@ async def publish_item(
         visibility=document.visibility,
     )
     markdown_text = render_markdown_file(frontmatter, markdown)
-    stored_original = await backend.put_file(orig_path, data, content_type_for(item.ext))
-    stored_markdown = await backend.put_file(
-        md_path, markdown_text.encode("utf-8"), "text/markdown"
-    )
-    document_version = DocumentVersion(
-        document_id=document.id,
-        version=version,
-        sha256=item.sha256,
-        original_path=orig_path,
-        original_storage_version=stored_original.version_id,
-        markdown_path=md_path,
-        markdown_storage_version=stored_markdown.version_id,
-        markdown_text=markdown_text,
-        uploaded_by=uploader.id,
-        upload_item_id=item.id,
-    )
-    db.add(document_version)
-    document.current_version = version
-    document.updated_at = moment
-    await db.flush()
-    await _remove_unchanged_stub(db, project, doc_type, backend)
-    await refresh_reports(db, project=project, backend=backend, taxonomy=taxonomy, now=moment)
+    document_id = document.id  # plain id: a failed flush leaves ``document`` unusable
+    original_type = content_type_for(item.ext)
+    try:
+        stored_original = await backend.put_file(orig_path, data, original_type)
+        changes.written.append((orig_path, original_type))
+        stored_markdown = await backend.put_file(
+            md_path, markdown_text.encode("utf-8"), "text/markdown"
+        )
+        changes.written.append((md_path, "text/markdown"))
+        document_version = DocumentVersion(
+            document_id=document.id,
+            version=version,
+            sha256=item.sha256,
+            original_path=orig_path,
+            original_storage_version=stored_original.version_id,
+            markdown_path=md_path,
+            markdown_storage_version=stored_markdown.version_id,
+            markdown_text=markdown_text,
+            uploaded_by=uploader.id,
+            upload_item_id=item.id,
+        )
+        db.add(document_version)
+        document.current_version = version
+        document.updated_at = moment
+        await db.flush()
+        await _remove_unchanged_stub(db, project, doc_type, backend, changes)
+        await refresh_reports(db, project=project, backend=backend, taxonomy=taxonomy, now=moment)
+    except BaseException:
+        await changes.undo(backend, document_id)
+        raise
     return document_version

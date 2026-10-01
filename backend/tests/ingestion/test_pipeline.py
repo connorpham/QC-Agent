@@ -1,17 +1,28 @@
 """The per-item state machine with a scripted analyzer."""
 
+import asyncio
+import logging
+import uuid
 from pathlib import Path
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agent.fake import FakeAnalyzer, ScriptedVerdict
 from app.core.config import Settings
 from app.db.models import Document, UploadItem
+from app.db.session import get_sessionmaker
 from app.ingestion.taxonomy import Taxonomy
 from app.schemas.uploads import UploadItemSpec
-from app.services.pipeline import publish_confirmed_item, requeue_stale_items
-from app.services.uploads import confirm_type
+from app.services import pipeline
+from app.services.pipeline import (
+    check_items,
+    convert_item,
+    publish_confirmed_item,
+    requeue_stale_items,
+)
+from app.services.uploads import confirm_type, list_items
 from tests.factories import make_project, make_user
 from tests.helpers.files import docx_bytes, pdf_bytes
 from tests.helpers.ingest import ingest, pipeline_context
@@ -174,3 +185,128 @@ async def test_requeue_restarts_items_left_in_progress(
                 break
         await asyncio.sleep(0.05)
     assert item.status == "published"
+
+
+async def _wait_for_terminal(
+    maker: async_sessionmaker[AsyncSession], item_id: uuid.UUID
+) -> UploadItem:
+    for _ in range(100):
+        async with maker() as db:
+            item = await db.get_one(UploadItem, item_id)
+            if item.status in ("published", "failed", "needs_confirmation"):
+                return item
+        await asyncio.sleep(0.05)
+    return item
+
+
+async def test_requeue_publishes_a_confirmed_item_without_rechecking(
+    db_sessionmaker: async_sessionmaker[AsyncSession], settings: Settings, taxonomy: Taxonomy
+) -> None:
+    fake = FakeAnalyzer({"plan.docx": ScriptedVerdict("mismatch", "Looks wrong.", "test-plan")})
+    async with db_sessionmaker() as db:
+        owner = await make_user(db, settings)
+        project = await make_project(db, settings, taxonomy, owner=owner)
+        _, items, _ = await ingest(
+            db,
+            settings,
+            taxonomy,
+            project=project,
+            uploader=owner,
+            role="owner",
+            files=[("plan.docx", PLAN)],
+            specs=[UploadItemSpec(doc_type="srs")],
+            analyzer=fake,
+        )
+        item_id = items[0].id
+        await confirm_type(
+            db,
+            items[0],
+            doc_type_key="test-plan",
+            taxonomy=taxonomy,
+            actor=owner,
+            project_id=project.id,
+        )  # the process dies before publish_confirmed_item runs
+    count = await requeue_stale_items(pipeline_context(settings, taxonomy, fake))
+    assert count == 1
+    item = await _wait_for_terminal(db_sessionmaker, item_id)
+    assert item.status == "published" and item.type_check == "mismatch_changed"
+    assert item.final_doc_type == "test-plan"
+    assert len(fake.batches) == 1  # not checked again
+
+
+async def test_missing_converted_text_at_check_fails_only_that_item(
+    db: AsyncSession, settings: Settings, taxonomy: Taxonomy, staging_root: Path
+) -> None:
+    owner = await make_user(db, settings)
+    project = await make_project(db, settings, taxonomy, owner=owner)
+    upload, items, _ = await ingest(
+        db,
+        settings,
+        taxonomy,
+        project=project,
+        uploader=owner,
+        role="owner",
+        files=[("srs.docx", SRS), ("plan.docx", PLAN)],
+        specs=[UploadItemSpec(doc_type="srs"), UploadItemSpec(doc_type="test-plan")],
+        run=False,
+    )
+    ctx = pipeline_context(settings, taxonomy)
+    maker = get_sessionmaker()
+    by_name = {i.original_name: i.id for i in items}
+    for item in items:
+        assert await convert_item(ctx, maker, item.id)
+    lost = next(i for i in items if i.original_name == "srs.docx")
+    staged = staging_root / lost.staging_path
+    staged.with_name(staged.name + ".md").unlink()
+    ready = await check_items(ctx, maker, upload.id, [i.id for i in items])
+    assert ready == [by_name["plan.docx"]]
+    upload_id = upload.id  # plain id: the upload is expired below
+    db.expire_all()
+    failed = await db.get_one(UploadItem, by_name["srs.docx"])
+    assert failed.status == "failed"
+    assert failed.error == "Staged file is no longer available; upload the file again."
+    statuses = {i.original_name: i.status for i in await list_items(db, upload_id)}
+    assert statuses == {"srs.docx": "failed", "plan.docx": "publishing"}
+
+
+async def test_requeued_task_crash_is_logged_with_ids_only(
+    db_sessionmaker: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    taxonomy: Taxonomy,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async with db_sessionmaker() as db:
+        owner = await make_user(db, settings)
+        project = await make_project(db, settings, taxonomy, owner=owner)
+        upload, items, _ = await ingest(
+            db,
+            settings,
+            taxonomy,
+            project=project,
+            uploader=owner,
+            role="owner",
+            files=[("srs.docx", SRS)],
+            specs=[UploadItemSpec(doc_type="srs")],
+            run=False,
+        )
+        items[0].status = "checking"
+        await db.commit()
+        upload_id = upload.id
+
+    async def crash(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("secret document text")
+
+    monkeypatch.setattr(pipeline, "run_upload", crash)
+    with caplog.at_level(logging.ERROR, logger="app.services.pipeline"):
+        assert await requeue_stale_items(pipeline_context(settings, taxonomy)) == 1
+        for _ in range(50):
+            if caplog.records:
+                break
+            await asyncio.sleep(0.02)
+    assert len(caplog.records) == 1
+    record = caplog.records[0]
+    assert str(upload_id) in record.getMessage()
+    assert "secret document text" not in record.getMessage()
+    assert record.exc_info is None  # the exception class is named; its message is not logged
+    assert "RuntimeError" in record.getMessage()

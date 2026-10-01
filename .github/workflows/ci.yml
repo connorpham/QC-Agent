@@ -75,14 +75,24 @@ jobs:
   secrets:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
     timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: 8.30.0
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Scans the full git history with the official release binary. gitleaks-action's
+      # PR range (first commit's parent) fails here because the root commit has no parent.
+      - name: Install gitleaks
+        run: |
+          curl -sSfL -o /tmp/gitleaks.tgz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar -xzf /tmp/gitleaks.tgz -C /usr/local/bin gitleaks
+          gitleaks version
+      - name: Scan full history
+        run: |
+          gitleaks git --redact --no-banner --exit-code 1 . 2>&1 | tee /tmp/gitleaks.log
+          if grep -q " 0 commits scanned" /tmp/gitleaks.log; then
+            echo "::error::gitleaks scanned no commits"; exit 1
+          fi

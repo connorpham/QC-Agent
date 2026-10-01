@@ -26,14 +26,29 @@ class LoginResult:
     auth_session: AuthSession
 
 
-def register_failure(user: User, settings: Settings, now: datetime) -> bool:
-    """Count a failed credential check. Returns True when the account just got locked."""
-    user.failed_logins += 1
-    if user.failed_logins >= settings.login_max_failures:
-        user.locked_until = now + timedelta(minutes=settings.lockout_minutes)
-        user.failed_logins = 0
-        return True
-    return False
+async def register_failure(db: AsyncSession, user: User, settings: Settings, now: datetime) -> bool:
+    """Count a failed credential check atomically. Returns True when this failure locked the
+    account. Concurrent failures each add one in the database, so a stale in-memory
+    ``failed_logins`` cannot lose a count."""
+    count = await db.scalar(
+        update(User)
+        .where(User.id == user.id)
+        .values(failed_logins=User.failed_logins + 1)
+        .returning(User.failed_logins)
+        .execution_options(synchronize_session=False)
+    )
+    locked = False
+    if count is not None and count >= settings.login_max_failures:
+        locked_id = await db.scalar(
+            update(User)
+            .where(User.id == user.id, User.failed_logins >= settings.login_max_failures)
+            .values(locked_until=now + timedelta(minutes=settings.lockout_minutes), failed_logins=0)
+            .returning(User.id)
+            .execution_options(synchronize_session=False)
+        )
+        locked = locked_id is not None
+    await db.refresh(user)
+    return locked
 
 
 def is_locked(user: User, now: datetime) -> bool:
@@ -63,7 +78,7 @@ async def authenticate(
         await db.commit()
         return None
     if not verify_password(user.password_hash, password):
-        locked = register_failure(user, settings, moment)
+        locked = await register_failure(db, user, settings, moment)
         await audit.record(
             db, "auth.login_failed", user_id=user.id, details={"locked": locked, "ip": ip}
         )

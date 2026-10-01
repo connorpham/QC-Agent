@@ -8,7 +8,10 @@ from app.core.config import Settings
 from app.core.crypto import SecretBox
 from app.core.passwords import hash_password
 from app.core.tokens import hash_token, new_session_token
-from app.db.models import AuthSession, User
+from app.db.models import AuthSession, Project, ProjectMember, User
+from app.ingestion.taxonomy import Taxonomy
+from app.services.consent import record_consent
+from app.services.projects import create_project
 
 DEFAULT_PASSWORD = "correct-horse-battery-staple"
 
@@ -68,3 +71,29 @@ async def make_session_token(
 async def reload[T](db: AsyncSession, model: type[T], obj_id: uuid.UUID | Any) -> T | None:
     db.expire_all()
     return await db.get(model, obj_id)
+
+
+async def make_project(
+    db: AsyncSession,
+    settings: Settings,
+    taxonomy: Taxonomy,
+    *,
+    owner: User,
+    name: str = "Demo Project",
+    client_name: str | None = "ACME",
+    consent: bool = True,
+) -> Project:
+    """A project with its workspace provisioned (folders, stubs, reports) and, by default, the
+    LLM data-processing confirmation recorded so uploads are allowed."""
+    project = await create_project(
+        db, name=name, client_name=client_name, creator=owner, settings=settings, taxonomy=taxonomy
+    )
+    if consent:
+        await record_consent(db, project, actor=owner, confirmed_by_name="Customer Rep")
+    await db.refresh(project)
+    return project
+
+
+async def add_member(db: AsyncSession, project: Project, user: User, role: str) -> None:
+    db.add(ProjectMember(project_id=project.id, user_id=user.id, role=role))
+    await db.commit()

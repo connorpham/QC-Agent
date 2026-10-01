@@ -3,29 +3,45 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, HTTPException
 
 from app.api.deps import (
-    INTERNAL_ROLES,
     AnyMember,
+    AppSettings,
     CurrentUser,
     DbSession,
     InternalMember,
     ProjectOwner,
+    TaxonomyDep,
 )
-from app.db.models import Project
+from app.db.models import INTERNAL_ROLES, Project
 from app.schemas.projects import (
+    LlmConsentOut,
+    LlmConsentRequest,
     MemberIn,
     MemberOut,
     ProjectCreate,
     ProjectOut,
     ProjectSettings,
+    ProjectStorageOut,
     ProjectUpdate,
 )
 from app.services import audit
+from app.services import consent as consent_service
 from app.services import projects as projects_service
+from app.storage.base import StorageError
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
+def _consent_out(project: Project) -> LlmConsentOut | None:
+    if not project.llm_consent:
+        return None
+    return LlmConsentOut(
+        confirmed_by_name=project.llm_consent["confirmed_by_name"],
+        confirmed_at=project.llm_consent["confirmed_at"],
+    )
+
+
 def _out(project: Project, role: str) -> ProjectOut:
+    internal = role in INTERNAL_ROLES
     return ProjectOut(
         id=project.id,
         slug=project.slug,
@@ -33,7 +49,13 @@ def _out(project: Project, role: str) -> ProjectOut:
         client_name=project.client_name,
         created_at=project.created_at,
         my_role=role,
-        settings=ProjectSettings(**project.settings) if role in INTERNAL_ROLES else None,
+        settings=ProjectSettings(**project.settings) if internal else None,
+        storage=(
+            ProjectStorageOut(type=project.storage["type"], root=project.storage["root"])
+            if internal and project.storage
+            else None
+        ),
+        llm_consent=_consent_out(project),
     )
 
 
@@ -43,12 +65,28 @@ async def list_projects(user: CurrentUser, db: DbSession) -> list[ProjectOut]:
 
 
 @router.post("", response_model=ProjectOut, status_code=201)
-async def create_project(body: ProjectCreate, user: CurrentUser, db: DbSession) -> ProjectOut:
+async def create_project(
+    body: ProjectCreate,
+    user: CurrentUser,
+    db: DbSession,
+    settings: AppSettings,
+    taxonomy: TaxonomyDep,
+) -> ProjectOut:
     if user.account_type != "internal":
         raise HTTPException(status_code=403, detail="Only internal users can create projects.")
-    project = await projects_service.create_project(
-        db, name=body.name, client_name=body.client_name, creator=user
-    )
+    try:
+        project = await projects_service.create_project(
+            db,
+            name=body.name,
+            client_name=body.client_name,
+            creator=user,
+            settings=settings,
+            taxonomy=taxonomy,
+        )
+    except StorageError as exc:
+        raise HTTPException(
+            status_code=503, detail="Storage is unavailable; the project was not created."
+        ) from exc
     await db.refresh(project)
     return _out(project, "owner")
 
@@ -107,3 +145,18 @@ async def put_members(members: list[MemberIn], ctx: ProjectOwner, db: DbSession)
     except projects_service.MemberValidationError as exc:
         raise HTTPException(status_code=422, detail=exc.message) from exc
     return await projects_service.list_members(db, ctx.project.id)
+
+
+@router.post("/{project_id}/llm-consent", response_model=LlmConsentOut, status_code=201)
+async def record_llm_consent(
+    body: LlmConsentRequest, ctx: ProjectOwner, db: DbSession
+) -> LlmConsentOut:
+    try:
+        await consent_service.record_consent(
+            db, ctx.project, actor=ctx.user, confirmed_by_name=body.confirmed_by_name
+        )
+    except consent_service.ConsentError as exc:
+        raise HTTPException(status_code=409, detail=exc.message) from exc
+    consent = _consent_out(ctx.project)
+    assert consent is not None  # noqa: S101 - just recorded
+    return consent

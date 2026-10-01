@@ -49,6 +49,28 @@ class ProjectUpdate(BaseModel):
         return None if value is None else _clean_name(value)
 
 
+class ProjectStorageOut(BaseModel):
+    type: str
+    root: str
+
+
+class LlmConsentOut(BaseModel):
+    confirmed_by_name: str
+    confirmed_at: datetime
+
+
+class LlmConsentRequest(BaseModel):
+    confirmed_by_name: str = Field(min_length=1, max_length=200)
+
+    @field_validator("confirmed_by_name")
+    @classmethod
+    def _name(cls, value: str) -> str:
+        cleaned = " ".join(value.split())
+        if not cleaned:
+            raise ValueError("The confirming person's name is required.")
+        return cleaned
+
+
 class ProjectOut(BaseModel):
     id: uuid.UUID
     slug: str
@@ -57,6 +79,8 @@ class ProjectOut(BaseModel):
     created_at: datetime
     my_role: str
     settings: ProjectSettings | None
+    storage: ProjectStorageOut | None
+    llm_consent: LlmConsentOut | None
 
 
 class MemberIn(BaseModel):

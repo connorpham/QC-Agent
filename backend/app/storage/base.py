@@ -61,6 +61,21 @@ def normalize_path(path: str) -> str:
     return "/".join(parts)
 
 
+ROOT_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+ROOT_SEGMENT_MESSAGE = (
+    "Root folder must be a single folder name of up to 80 letters, digits, '.', '_' or '-', "
+    "starting with a letter or digit."
+)
+
+
+def validate_root_segment(root: str) -> str:
+    """A project's folder inside its storage connection: one safe path segment (spec 8.5)."""
+    if not ROOT_SEGMENT_RE.fullmatch(root):
+        raise StoragePathError(ROOT_SEGMENT_MESSAGE)
+    normalize_path(root)  # defence in depth: reserved names such as .versions and .trash
+    return root
+
+
 class StorageBackend(Protocol):
     async def ensure_folder(self, path: str) -> None: ...
 

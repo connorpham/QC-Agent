@@ -8,7 +8,7 @@ from app.core.config import Settings
 from app.core.crypto import SecretBox
 from app.core.passwords import hash_password
 from app.core.tokens import hash_token, new_session_token
-from app.db.models import AuthSession, Project, ProjectMember, User
+from app.db.models import AuthSession, Project, ProjectMember, StorageConnection, User
 from app.ingestion.taxonomy import Taxonomy
 from app.services.consent import record_consent
 from app.services.projects import create_project
@@ -73,6 +73,25 @@ async def reload[T](db: AsyncSession, model: type[T], obj_id: uuid.UUID | Any) -
     return await db.get(model, obj_id)
 
 
+async def make_connection(
+    db: AsyncSession,
+    *,
+    name: str = "Second storage",
+    root_path: str = "second",
+    type_: str = "localfs",
+    is_active: bool = True,
+) -> StorageConnection:
+    """A non-default connection under LOCAL_STORAGE_ROOT/<root_path>; the folder is created on
+    first use. Use the service's ``set_default`` to make it the default."""
+    connection = StorageConnection(
+        type=type_, name=name, config={"root_path": root_path}, is_active=is_active
+    )
+    db.add(connection)
+    await db.commit()
+    await db.refresh(connection)
+    return connection
+
+
 async def make_project(
     db: AsyncSession,
     settings: Settings,
@@ -82,11 +101,21 @@ async def make_project(
     name: str = "Demo Project",
     client_name: str | None = "ACME",
     consent: bool = True,
+    connection_id: uuid.UUID | None = None,
+    root: str | None = None,
 ) -> Project:
-    """A project with its workspace provisioned (folders, stubs, reports) and, by default, the
-    LLM data-processing confirmation recorded so uploads are allowed."""
+    """A project with its workspace provisioned (folders, stubs, reports) on the given or
+    default connection and, by default, the LLM data-processing confirmation recorded so
+    uploads are allowed."""
     project = await create_project(
-        db, name=name, client_name=client_name, creator=owner, settings=settings, taxonomy=taxonomy
+        db,
+        name=name,
+        client_name=client_name,
+        creator=owner,
+        settings=settings,
+        taxonomy=taxonomy,
+        connection_id=connection_id,
+        root=root,
     )
     if consent:
         await record_consent(db, project, actor=owner, confirmed_by_name="Customer Rep")

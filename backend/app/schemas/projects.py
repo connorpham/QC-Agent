@@ -50,6 +50,8 @@ class ProjectUpdate(BaseModel):
 
 
 class ProjectStorageOut(BaseModel):
+    connection_id: uuid.UUID
+    connection_name: str
     type: str
     root: str
 

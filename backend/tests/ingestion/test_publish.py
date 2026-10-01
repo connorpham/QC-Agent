@@ -4,9 +4,11 @@ reports, idempotency. Files go through the real intake and pipeline with the Ski
 import asyncio
 import hashlib
 import json
+import uuid
 from pathlib import Path
 
-from sqlalchemy import select
+import pytest
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -15,8 +17,17 @@ from app.db.session import get_sessionmaker
 from app.ingestion.naming import split_frontmatter
 from app.ingestion.taxonomy import Taxonomy
 from app.schemas.uploads import UploadItemSpec
-from app.services.pipeline import publish_item_by_id, run_upload
+from app.services import publish as publish_module
+from app.services.pipeline import (
+    NO_CHANGE_ERROR,
+    check_items,
+    convert_item,
+    publish_item_by_id,
+    run_upload,
+)
 from app.services.uploads import list_items
+from app.storage.base import StorageError
+from app.storage.localfs import LocalFsBackend
 from tests.factories import make_project, make_user
 from tests.helpers.files import docx_bytes
 from tests.helpers.ingest import ingest, pipeline_context
@@ -279,3 +290,193 @@ async def test_concurrent_publishes_in_one_project_get_distinct_slugs(
     assert sorted(d.slug for d in documents) == ["portal-srs", "portal-srs-2"]
     statuses = [i.status for upload_id in upload_ids for i in await list_items(db, upload_id)]
     assert statuses == ["published", "published"]
+
+
+async def _to_publishing(settings: Settings, taxonomy: Taxonomy, upload_id: uuid.UUID) -> None:
+    """Convert and check (SkipAnalyzer) the items of an upload, leaving them in ``publishing``."""
+    ctx = pipeline_context(settings, taxonomy)
+    maker = get_sessionmaker()
+    async with maker() as session:
+        ids = [i.id for i in await list_items(session, upload_id)]
+    converted = [i for i in ids if await convert_item(ctx, maker, i)]
+    assert await check_items(ctx, maker, upload_id, converted) == converted
+
+
+async def _boom(*args: object, **kwargs: object) -> None:
+    raise RuntimeError("simulated failure after the storage writes")
+
+
+async def test_failed_new_document_publish_leaves_no_files(
+    db: AsyncSession,
+    settings: Settings,
+    taxonomy: Taxonomy,
+    storage_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner, project = await _setup(db, settings, taxonomy)
+    monkeypatch.setattr(publish_module, "refresh_reports", _boom)
+    _, items, _ = await ingest(
+        db,
+        settings,
+        taxonomy,
+        project=project,
+        uploader=owner,
+        role="owner",
+        files=[("srs.docx", SRS_V1)],
+        specs=[UploadItemSpec(doc_type="srs", title="Portal SRS")],
+    )
+    assert items[0].status == "failed"
+    assert items[0].error == "Publishing failed unexpectedly."
+    root = storage_root / "demo"
+    assert not (root / "02-requirements/srs--portal-srs.docx").exists()
+    assert not (root / "02-requirements/srs--portal-srs.md").exists()
+    # the trashed stub is put back, matching the stub row that the rollback restored
+    assert (root / "02-requirements/srs.md").exists()
+    assert (await db.scalars(select(Document).where(Document.is_stub.is_(False)))).all() == []
+
+
+async def test_failed_version_publish_restores_previous_files(
+    db: AsyncSession,
+    settings: Settings,
+    taxonomy: Taxonomy,
+    storage_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner, project = await _setup(db, settings, taxonomy)
+    await ingest(
+        db,
+        settings,
+        taxonomy,
+        project=project,
+        uploader=owner,
+        role="owner",
+        files=[("srs.docx", SRS_V1)],
+        specs=[UploadItemSpec(doc_type="srs", title="Portal SRS")],
+    )
+    document = (await db.scalars(select(Document).where(Document.slug == "portal-srs"))).one()
+    root = storage_root / "demo"
+    markdown_before = (root / "02-requirements/srs--portal-srs.md").read_bytes()
+    monkeypatch.setattr(publish_module, "refresh_reports", _boom)
+    _, items, _ = await ingest(
+        db,
+        settings,
+        taxonomy,
+        project=project,
+        uploader=owner,
+        role="owner",
+        files=[("srs-v2.docx", SRS_V2)],
+        specs=[UploadItemSpec(doc_type="srs", intent="version", target_document_id=document.id)],
+    )
+    assert items[0].status == "failed"
+    await db.refresh(document)
+    assert document.current_version == 1
+    assert (root / "02-requirements/srs--portal-srs.docx").read_bytes() == SRS_V1
+    assert (root / "02-requirements/srs--portal-srs.md").read_bytes() == markdown_before
+
+
+async def test_concurrent_publish_of_one_item_publishes_once(
+    db: AsyncSession, settings: Settings, taxonomy: Taxonomy
+) -> None:
+    owner, project = await _setup(db, settings, taxonomy)
+    upload, _, _ = await ingest(
+        db,
+        settings,
+        taxonomy,
+        project=project,
+        uploader=owner,
+        role="owner",
+        files=[("srs.docx", SRS_V1)],
+        specs=[UploadItemSpec(doc_type="srs")],
+        run=False,
+    )
+    await _to_publishing(settings, taxonomy, upload.id)
+    item_id = (await list_items(db, upload.id))[0].id
+    ctx = pipeline_context(settings, taxonomy)
+    await asyncio.gather(
+        publish_item_by_id(ctx, get_sessionmaker(), item_id),
+        publish_item_by_id(ctx, get_sessionmaker(), item_id),
+    )
+    db.expire_all()
+    assert (await db.get_one(UploadItem, item_id)).status == "published"
+    versions = await db.scalar(
+        select(func.count())
+        .select_from(DocumentVersion)
+        .where(DocumentVersion.upload_item_id == item_id)
+    )
+    published = await db.scalar(
+        select(func.count()).select_from(AuditLog).where(AuditLog.action == "upload_item.published")
+    )
+    failed = await db.scalar(
+        select(func.count()).select_from(AuditLog).where(AuditLog.action == "upload_item.failed")
+    )
+    assert versions == 1 and published == 1 and failed == 0
+
+
+async def test_no_change_detected_under_the_lock_fails_the_item(
+    db: AsyncSession, settings: Settings, taxonomy: Taxonomy
+) -> None:
+    owner, project = await _setup(db, settings, taxonomy)
+    await ingest(
+        db,
+        settings,
+        taxonomy,
+        project=project,
+        uploader=owner,
+        role="owner",
+        files=[("srs.docx", SRS_V1)],
+        specs=[UploadItemSpec(doc_type="srs", title="Portal SRS")],
+    )
+    document = (await db.scalars(select(Document).where(Document.slug == "portal-srs"))).one()
+    document_id = document.id  # plain id: each ingest expires the document
+    upload_ids = []  # both pass intake: neither equals the current version (v1) yet
+    for _ in range(2):
+        upload, _, _ = await ingest(
+            db,
+            settings,
+            taxonomy,
+            project=project,
+            uploader=owner,
+            role="owner",
+            files=[("srs-v2.docx", SRS_V2)],
+            specs=[
+                UploadItemSpec(doc_type="srs", intent="version", target_document_id=document_id)
+            ],
+            run=False,
+        )
+        upload_ids.append(upload.id)
+    ctx = pipeline_context(settings, taxonomy)
+    for upload_id in upload_ids:
+        await run_upload(ctx, upload_id)
+    db.expire_all()
+    first, second = [(await list_items(db, upload_id))[0] for upload_id in upload_ids]
+    assert first.status == "published"
+    assert second.status == "failed" and second.error == NO_CHANGE_ERROR
+    await db.refresh(document)
+    assert document.current_version == 2
+
+
+async def test_storage_error_during_publish_fails_the_item(
+    db: AsyncSession, settings: Settings, taxonomy: Taxonomy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner, project = await _setup(db, settings, taxonomy)
+
+    async def unavailable(*args: object, **kwargs: object) -> None:
+        raise StorageError("Storage is unavailable.")
+
+    monkeypatch.setattr(LocalFsBackend, "put_file", unavailable)
+    _, items, _ = await ingest(
+        db,
+        settings,
+        taxonomy,
+        project=project,
+        uploader=owner,
+        role="owner",
+        files=[("srs.docx", SRS_V1)],
+        specs=[UploadItemSpec(doc_type="srs")],
+    )
+    assert items[0].status == "failed" and items[0].error == "Storage is unavailable."
+    assert (await db.scalars(select(Document).where(Document.is_stub.is_(False)))).all() == []
+    failed = (
+        await db.scalars(select(AuditLog).where(AuditLog.action == "upload_item.failed"))
+    ).all()
+    assert len(failed) == 1

@@ -6,7 +6,7 @@ non-terminal state when the process starts."""
 import asyncio
 import logging
 import uuid
-from collections.abc import Sequence
+from collections.abc import Coroutine, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,6 +32,7 @@ ACTIVE_STATUSES = ("uploaded", "converting", "checking", "publishing")
 NO_CHANGE_ERROR = "No change: this file is identical to the current version."
 LOW_TEXT_EXPLANATION = "The file has little extractable text; the type check was skipped."
 CHECK_FAILED_EXPLANATION = "The type check could not run; the selected type was kept."
+STAGED_FILE_MISSING = "Staged file is no longer available; upload the file again."
 PREVIEW_CHARS = 2000
 _background: set[asyncio.Task[None]] = set()
 
@@ -68,17 +69,18 @@ async def transition(
 async def _fail(
     db: AsyncSession, item_id: uuid.UUID, project_id: uuid.UUID, from_status: str, error: str
 ) -> None:
-    """Mark an item failed. Takes ids, not ORM objects: callers may have rolled back, which
-    expires loaded attributes and would trigger implicit I/O on access."""
-    await transition(db, item_id, (from_status,), "failed", error=error)
-    await audit.record(
-        db,
-        "upload_item.failed",
-        project_id=project_id,
-        target_type="upload_item",
-        target_id=str(item_id),
-        details={"error": error},
-    )
+    """Mark an item failed (audited only if this call moved it). Takes ids, not ORM objects:
+    callers may have rolled back, which expires loaded attributes and would trigger implicit
+    I/O on access."""
+    if await transition(db, item_id, (from_status,), "failed", error=error):
+        await audit.record(
+            db,
+            "upload_item.failed",
+            project_id=project_id,
+            target_type="upload_item",
+            target_id=str(item_id),
+            details={"error": error},
+        )
     await db.commit()
 
 
@@ -104,13 +106,7 @@ async def convert_item(
             await _fail(db, item_id, project_id, "converting", exc.message)
             return False
         except FileNotFoundError:
-            await _fail(
-                db,
-                item_id,
-                project_id,
-                "converting",
-                "Staged file is no longer available; upload the file again.",
-            )
+            await _fail(db, item_id, project_id, "converting", STAGED_FILE_MISSING)
             return False
         except Exception:
             logger.exception("Conversion crashed for upload item %s", item_id)
@@ -131,7 +127,11 @@ async def _preview(ctx: PipelineContext, item: UploadItem) -> str:
 
 
 async def _build_batch(
-    ctx: PipelineContext, db: AsyncSession, project: Project, items: Sequence[UploadItem]
+    ctx: PipelineContext,
+    db: AsyncSession,
+    project: Project,
+    items: Sequence[UploadItem],
+    previews: dict[uuid.UUID, str],
 ) -> CheckBatch:
     existing = (
         await db.scalars(
@@ -145,7 +145,7 @@ async def _build_batch(
             selected_doc_type=item.selected_doc_type,
             title=item.title,
             outline=list(item.conversion_meta.get("outline", [])),
-            preview=await _preview(ctx, item),
+            preview=previews[item.id],
             language=item.conversion_meta.get("language"),
         )
         for item in items
@@ -198,7 +198,14 @@ async def check_items(
             ).all()
         )
         to_check: list[UploadItem] = []
+        previews: dict[uuid.UUID, str] = {}
         for item in items:
+            if LOW_TEXT not in item.conversion_meta.get("warnings", []):
+                try:
+                    previews[item.id] = await _preview(ctx, item)
+                except FileNotFoundError:
+                    await _fail(db, item.id, project.id, "checking", STAGED_FILE_MISSING)
+                    continue
             if LOW_TEXT in item.conversion_meta.get("warnings", []):
                 await transition(
                     db,
@@ -214,7 +221,7 @@ async def check_items(
         await db.commit()
         if not to_check:
             return ready
-        batch = await _build_batch(ctx, db, project, to_check)
+        batch = await _build_batch(ctx, db, project, to_check, previews)
         verdicts: dict[uuid.UUID, ItemVerdict] = {}
         try:
             result = await ctx.analyzer.check(batch)
@@ -298,16 +305,16 @@ async def publish_item_by_id(
             await db.rollback()
             await _fail(db, item_id, project_id, "publishing", "Publishing failed unexpectedly.")
             return
-        await transition(db, item_id, ("publishing",), "published", error=None)
-        await audit.record(
-            db,
-            "upload_item.published",
-            user_id=uploader_id,
-            project_id=project_id,
-            target_type="document",
-            target_id=str(version.document_id),
-            details={"upload_item_id": str(item_id), "version": version.version},
-        )
+        if await transition(db, item_id, ("publishing",), "published", error=None):
+            await audit.record(
+                db,
+                "upload_item.published",
+                user_id=uploader_id,
+                project_id=project_id,
+                target_type="document",
+                target_id=str(version.document_id),
+                details={"upload_item_id": str(item_id), "version": version.version},
+            )
         await db.commit()
 
 
@@ -332,23 +339,47 @@ async def publish_confirmed_item(ctx: PipelineContext, item_id: uuid.UUID) -> No
     await publish_item_by_id(ctx, get_sessionmaker(), item_id)
 
 
+def _spawn(coro: Coroutine[Any, Any, None], kind: str, target_id: uuid.UUID) -> None:
+    task = asyncio.create_task(coro)
+    _background.add(task)
+
+    def done(finished: asyncio.Task[None]) -> None:
+        _background.discard(finished)
+        if not finished.cancelled() and (exc := finished.exception()) is not None:
+            # ids and the error class only: exception messages may quote document content
+            logger.error("Requeued %s %s crashed (%s)", kind, target_id, type(exc).__name__)
+
+    task.add_done_callback(done)
+
+
 async def requeue_stale_items(ctx: PipelineContext) -> int:
-    """Reset items left mid-flight by a previous process to ``uploaded`` and run them again."""
+    """Restart items left mid-flight by a previous process. Items that were converting or
+    checking go back to ``uploaded`` and run again; items already in ``publishing`` passed the
+    check (or carry the user's confirmed type) and are published directly."""
     maker = get_sessionmaker()
+    restart = [status for status in ACTIVE_STATUSES if status != "publishing"]
     async with maker() as db:
         rows = (
             await db.execute(
                 update(UploadItem)
-                .where(UploadItem.status.in_(list(ACTIVE_STATUSES)))
+                .where(UploadItem.status.in_(restart))
                 .values(status="uploaded", updated_at=datetime.now(UTC))
                 .returning(UploadItem.upload_id)
                 .execution_options(synchronize_session=False)
             )
         ).all()
+        publishing = list(
+            (
+                await db.scalars(
+                    select(UploadItem.id)
+                    .where(UploadItem.status == "publishing")
+                    .order_by(UploadItem.created_at)
+                )
+            ).all()
+        )
         await db.commit()
-    upload_ids = {upload_id for (upload_id,) in rows}
-    for upload_id in upload_ids:
-        task = asyncio.create_task(run_upload(ctx, upload_id))
-        _background.add(task)
-        task.add_done_callback(_background.discard)
-    return len(rows)
+    for upload_id in {upload_id for (upload_id,) in rows}:
+        _spawn(run_upload(ctx, upload_id), "upload", upload_id)
+    for item_id in publishing:
+        _spawn(publish_item_by_id(ctx, maker, item_id), "upload item", item_id)
+    return len(rows) + len(publishing)

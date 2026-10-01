@@ -15,7 +15,7 @@ Việc còn nợ, tạm dừng ngày 2026-10-01 để xử lý task khác. Đán
 
 ## 2. Quyết định cần xác nhận (owner: Connor / IT)
 
-- [ ] Nền tảng CI: GitHub Actions, GitLab CI, Azure DevOps hay khác.
+- [x] Nền tảng CI: GitHub Actions (`.github/workflows/ci.yml`), chốt 2026-10-01.
 - [ ] Câu chữ xin khách hàng xác nhận việc gửi nội dung tài liệu lên Claude API.
 - [ ] Nhà cung cấp cloud, cấu hình VM và nơi lưu backup.
 

@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (lint, types, migrations, tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: qc
+          POSTGRES_PASSWORD: qc  # CI-only throwaway database
+          POSTGRES_DB: qc_agent
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U qc -d qc_agent"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://qc:qc@localhost:5432/qc_agent
+      TEST_DATABASE_URL: postgresql+asyncpg://qc:qc@localhost:5432/qc_agent_test
+      COOKIE_SECURE: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Create test database and per-run secrets
+        run: |
+          PGPASSWORD=qc psql -h localhost -U qc -d qc_agent -c "CREATE DATABASE qc_agent_test;"
+          echo "SESSION_SECRET=$(uv run python -c 'import secrets; print(secrets.token_urlsafe(48))')" >> "$GITHUB_ENV"
+          echo "SECRET_ENCRYPTION_KEY=$(uv run python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')" >> "$GITHUB_ENV"
+
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Ruff format
+        run: uv run ruff format --check .
+
+      - name: Mypy (strict)
+        run: uv run mypy app
+
+      - name: Migrations apply and match models
+        run: |
+          uv run alembic upgrade head
+          uv run alembic check
+
+      - name: Tests
+        run: uv run pytest -q
+
+  secrets:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: 8.30.0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Scans the full git history with the official release binary. gitleaks-action's
+      # PR range (first commit's parent) fails here because the root commit has no parent.
+      - name: Install gitleaks
+        run: |
+          curl -sSfL -o /tmp/gitleaks.tgz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar -xzf /tmp/gitleaks.tgz -C /usr/local/bin gitleaks
+          gitleaks version
+      - name: Scan full history
+        run: |
+          gitleaks git --redact --no-banner --exit-code 1 . 2>&1 | tee /tmp/gitleaks.log
+          if grep -q " 0 commits scanned" /tmp/gitleaks.log; then
+            echo "::error::gitleaks scanned no commits"; exit 1
+          fi

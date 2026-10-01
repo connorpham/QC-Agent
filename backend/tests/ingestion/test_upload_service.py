@@ -58,6 +58,9 @@ async def test_stage_files_expands_zip_and_keeps_entry_titles_open(tmp_path: Pat
     )
     assert [r.name for r in rejections] == ["notes.exe", "v2.zip"]
     assert rejections[1].reason == "Zip archives cannot be uploaded as a new version."
+    # the rejected v2.zip's staged copy must be removed, not left behind in "incoming"
+    incoming_dir = tmp_path / "staging" / "u1" / "incoming"
+    assert len(list(incoming_dir.iterdir())) == 2  # SRS final.docx and export.zip only
 
 
 async def test_create_upload_rules(
@@ -204,6 +207,8 @@ async def test_create_upload_no_change_for_internal_user_and_all_rejected(
         "No change: this file is identical to the current version."
     ]
     assert (await db.scalars(select(Upload))).all() == []
+    # the staging directory for this upload must be cleaned up since nothing was accepted
+    assert not staging_dir_for(staging_root, upload_id).is_dir()
 
 
 async def test_confirm_type_version_must_keep_target_document_type(

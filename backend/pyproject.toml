@@ -8,7 +8,10 @@ dependencies = [
     "asyncpg>=0.31.0",
     "cryptography>=50.0.2",
     "fastapi>=0.142.2",
+    "langdetect>=1.0.9",
+    "markitdown[docx,pdf,pptx,xlsx]>=0.1.8",
     "pydantic-settings>=2.15.0",
+    "pymupdf>=1.28.2",
     "pyotp>=2.10.0",
     "sqlalchemy[asyncio]>=2.1.1",
     "uvicorn[standard]>=0.54.0",
@@ -46,16 +49,20 @@ python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
 exclude = ["migrations/"]
+untyped_calls_exclude = ["pymupdf"]  # ships py.typed but leaves Document untyped
 
 [[tool.mypy.overrides]]
-module = ["pyotp"]
+module = ["pyotp", "langdetect", "langdetect.*"]
 ignore_missing_imports = true
 
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
     "mypy>=2.3.1",
+    "openpyxl>=3.1.5",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
+    "python-docx>=1.2.0",
+    "python-pptx>=1.0.2",
     "ruff>=0.16.9",
 ]

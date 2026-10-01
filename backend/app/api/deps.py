@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.cookies import SESSION_COOKIE
 from app.core.config import Settings
+from app.core.crypto import SecretBox
 from app.core.tokens import hash_token
 from app.db.models import AuthSession, User
 from app.db.session import get_session
@@ -51,3 +52,19 @@ def auth_rate_limit(request: Request) -> None:
     key = request.client.host if request.client else "unknown"
     if not request.app.state.auth_limiter.hit(key):
         raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
+
+
+def secret_box_dep(settings: AppSettings) -> SecretBox:
+    return SecretBox(settings.secret_encryption_key)
+
+
+Box = Annotated[SecretBox, Depends(secret_box_dep)]
+
+
+async def mfa_context(ctx: SessionCtx) -> SessionContext:
+    if not ctx.auth_session.mfa_verified:
+        raise HTTPException(status_code=401, detail="MFA verification required.")
+    return ctx
+
+
+MfaCtx = Annotated[SessionContext, Depends(mfa_context)]

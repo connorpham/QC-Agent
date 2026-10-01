@@ -3,11 +3,24 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from app.api.cookies import clear_session_cookie, set_session_cookie
-from app.api.deps import AppSettings, DbSession, SessionCtx, auth_rate_limit
-from app.schemas.auth import LoginRequest, LoginResponse, MeResponse
+from app.api.deps import AppSettings, Box, DbSession, SessionCtx, auth_rate_limit
+from app.schemas.auth import (
+    CodeRequest,
+    EnrollResponse,
+    LoginRequest,
+    LoginResponse,
+    MeResponse,
+    RecoveryCodesResponse,
+)
 from app.services import audit
 from app.services.auth import authenticate
 from app.services.context import SessionContext
+from app.services.mfa import (
+    MfaStateError,
+    confirm_enrolment,
+    start_enrolment,
+    verify_second_factor,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -58,3 +71,40 @@ async def logout(ctx: SessionCtx, response: Response, db: DbSession, settings: A
     await audit.record(db, "auth.logout", user_id=ctx.user.id)
     await db.commit()
     clear_session_cookie(response, settings)
+
+
+@router.post("/mfa/enroll", response_model=EnrollResponse, dependencies=[Depends(auth_rate_limit)])
+async def mfa_enroll(ctx: SessionCtx, db: DbSession, box: Box) -> EnrollResponse:
+    try:
+        secret, uri = await start_enrolment(db, ctx, box)
+    except MfaStateError as exc:
+        raise HTTPException(status_code=409, detail=exc.message) from exc
+    return EnrollResponse(secret=secret, otpauth_uri=uri)
+
+
+@router.post(
+    "/mfa/confirm", response_model=RecoveryCodesResponse, dependencies=[Depends(auth_rate_limit)]
+)
+async def mfa_confirm(
+    body: CodeRequest, ctx: SessionCtx, db: DbSession, box: Box, settings: AppSettings
+) -> RecoveryCodesResponse:
+    try:
+        codes = await confirm_enrolment(db, ctx, box, settings, body.code)
+    except MfaStateError as exc:
+        raise HTTPException(status_code=409, detail=exc.message) from exc
+    if codes is None:
+        raise HTTPException(status_code=400, detail="Invalid code.")
+    return RecoveryCodesResponse(recovery_codes=codes)
+
+
+@router.post("/mfa/verify", response_model=MeResponse, dependencies=[Depends(auth_rate_limit)])
+async def mfa_verify(
+    body: CodeRequest, ctx: SessionCtx, db: DbSession, box: Box, settings: AppSettings
+) -> MeResponse:
+    try:
+        ok = await verify_second_factor(db, ctx, box, settings, body.code)
+    except MfaStateError as exc:
+        raise HTTPException(status_code=409, detail=exc.message) from exc
+    if not ok:
+        raise HTTPException(status_code=401, detail="Invalid code.")
+    return me_response(ctx)

@@ -106,7 +106,11 @@ jobs:
         working-directory: frontend
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v6 # version from package.json "packageManager"
+      - uses: pnpm/action-setup@v6
+        with:
+          # the action looks at the repository root by default; the version lives
+          # in frontend/package.json "packageManager"
+          package_json_file: frontend/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -151,6 +155,8 @@ jobs:
         run: uv sync --locked
         working-directory: backend
       - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: frontend/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 24

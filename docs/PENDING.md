@@ -65,3 +65,4 @@ Việc còn nợ, tạm dừng ngày 2026-10-01 để xử lý task khác. Đán
 - [ ] Plan 5: tab trên trang dự án dùng `role="tablist"`/`role="tab"` nhưng thiếu tabpanel, `aria-controls` và điều hướng bằng phím mũi tên; hoàn thiện hoặc đổi sang button thường.
 - [ ] Plan 3b: thêm index hàm trên `(storage->>'connection_id', lower(storage->>'root'))` khi số dự án tăng.
 - [ ] Quy ước backend: một route commit một lần; các service gọi liên tiếp dùng chung transaction.
+- [ ] Plan 5: `/auth/mfa/verify` trả 401 cho cả mã sai lẫn phiên hết hạn; đổi mã sai sang 400 để màn MFA phân biệt được mà không phải gọi thêm `/auth/me`.

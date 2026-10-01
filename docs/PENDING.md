@@ -15,7 +15,7 @@ Việc còn nợ, tạm dừng ngày 2026-10-01 để xử lý task khác. Đán
 
 ## 2. Quyết định cần xác nhận (owner: Connor / IT)
 
-- [ ] Nền tảng CI: GitHub Actions, GitLab CI, Azure DevOps hay khác.
+- [x] Nền tảng CI: GitHub Actions (`.github/workflows/ci.yml`), chốt 2026-10-01.
 - [ ] Câu chữ xin khách hàng xác nhận việc gửi nội dung tài liệu lên Claude API.
 - [ ] Nhà cung cấp cloud, cấu hình VM và nơi lưu backup.
 
@@ -34,6 +34,17 @@ Việc còn nợ, tạm dừng ngày 2026-10-01 để xử lý task khác. Đán
 - [x] Spec v2 được duyệt (2026-10-01).
 - [x] Lập kế hoạch triển khai: `docs/superpowers/plans/2026-10-01-phase1-roadmap.md`.
 - [ ] Review Plan 0 và Plan 1, chọn cách thực thi (owner: Connor).
-- [ ] Thực thi Plan 1 (backend foundation). Cần Docker trước.
+- [x] Thực thi Plan 1 (backend foundation). Cần Docker trước.
 - [ ] Thực thi Plan 0, spike Agent SDK (cần API key): chạy song song, `setting_sources=[]`, `CLAUDE_CONFIG_DIR`, chi phí trên 10 tài liệu mẫu.
 - [ ] Thực thi Plan 0, spike lưu trữ (cần IT chuẩn bị site SharePoint và Shared Drive test): upload và phiên bản trên SharePoint (Graph) và Google Drive.
+
+## 5. Việc mang sang từ review Plan 1 (owner: Claude)
+
+- [ ] Plan 2, việc đầu tiên: đặt `EXPOSE_DOCS=false` trong `backend/tests/conftest.py`. Hiện test ẩn API docs sẽ fail nếu `.env` bật `EXPOSE_DOCS=true` như `.env.example`.
+- [ ] Plan 2, việc đầu tiên: tăng `failed_logins` bằng câu `UPDATE ... SET failed_logins = failed_logins + 1 RETURNING` để không mất lượt đếm khi có nhiều lần sai cùng lúc.
+- [ ] Plan 2: một thay đổi schema `ProjectSettings` phải kèm migration dữ liệu cho `projects.settings`.
+- [ ] Plan 6: uvicorn chạy với `--proxy-headers` và `FORWARDED_ALLOW_IPS` trỏ tới Caddy.
+- [ ] Plan 6: rate limiter quét toàn bộ key mỗi request khi có trên 100k IP còn hoạt động; giới hạn tần suất quét hoặc loại key cũ nhất.
+- [ ] Plan 6: job dọn `auth_sessions` đã hết hạn hoặc bị thu hồi.
+- [ ] Plan 6: runbook ghi rõ xoay `SESSION_SECRET` sẽ làm mất hiệu lực mọi phiên và mã khôi phục MFA.
+- [x] Cập nhật Global Constraints của Plan 1: giới hạn auth mặc định 100 request mỗi 5 phút, khóa chỉ reset sau MFA thành công.

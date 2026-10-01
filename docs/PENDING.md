@@ -67,3 +67,12 @@ Việc còn nợ, tạm dừng ngày 2026-10-01 để xử lý task khác. Đán
 - [ ] Quy ước backend: một route commit một lần; các service gọi liên tiếp dùng chung transaction.
 - [ ] Plan 5: `/auth/mfa/verify` trả 401 cho cả mã sai lẫn phiên hết hạn; đổi mã sai sang 400 để màn MFA phân biệt được mà không phải gọi thêm `/auth/me`.
 - [ ] Plan 3b/3c: PATCH kết nối lưu trữ ghi audit cả khi không có gì đổi; và không thể vừa kích hoạt vừa đặt mặc định trong một lần gọi (set_default chạy trước).
+
+## 6. Ràng buộc xác thực cho Plan 4 (tra cứu 2026-10-01)
+
+- [ ] Xin API key Anthropic riêng cho QC-Agent, kèm trần chi tiêu hàng tháng trên Console (owner: Connor / IT).
+- Không được dùng subscription Claude (Pro/Max) cho server: tài liệu Agent SDK nêu rõ Anthropic không cho phép bên thứ ba dùng đăng nhập hoặc hạn mức claude.ai cho sản phẩm của họ, kể cả agent xây trên Claude Agent SDK, trừ khi được duyệt trước. Nguồn: https://code.claude.com/docs/en/agent-sdk/overview.md
+- Lý do kỹ thuật kèm theo: token OAuth của subscription hết hạn khoảng một ngày và cần đăng nhập lại bằng trình duyệt, server headless không làm được; hạn mức subscription tính theo tuần và dùng chung với Claude Code của chính người dùng.
+- Dev local: lập trình viên có thể dùng `claude setup-token` rồi đặt `CLAUDE_CODE_OAUTH_TOKEN` cho máy mình, nhưng không đưa lên server.
+- Plan 4 không bị chặn hoàn toàn: lớp agent nằm sau interface `Analyzer` (SkipAnalyzer cho production, FakeAnalyzer cho test), nên chỉ nhóm test gọi API thật mới cần key.
+

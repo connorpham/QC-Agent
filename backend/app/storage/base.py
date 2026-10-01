@@ -56,7 +56,7 @@ def normalize_path(path: str) -> str:
         raise StoragePathError("Path is empty.")
     if ".." in parts:
         raise StoragePathError("Path must not contain '..'.")
-    if parts[0] in RESERVED_TOP_LEVEL:
+    if parts[0].casefold() in RESERVED_TOP_LEVEL:
         raise StoragePathError("Path uses a reserved folder name.")
     return "/".join(parts)
 

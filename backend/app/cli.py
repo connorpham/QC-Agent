@@ -9,6 +9,8 @@ from app.core.emails import is_valid_email, normalize_email
 from app.db.session import dispose_engine, init_engine
 from app.services.users import DuplicateEmail, create_user
 
+MAX_NAME_LENGTH = 200
+
 
 async def create_admin(db: AsyncSession, email: str, display_name: str) -> str:
     _, temporary = await create_user(
@@ -25,6 +27,9 @@ async def create_admin(db: AsyncSession, email: str, display_name: str) -> str:
 async def _create_admin_command(email: str, display_name: str) -> int:
     if not is_valid_email(normalize_email(email)):
         print("Enter a valid e-mail address.", file=sys.stderr)
+        return 1
+    if not 1 <= len(display_name.strip()) <= MAX_NAME_LENGTH:
+        print(f"Name must be 1-{MAX_NAME_LENGTH} characters.", file=sys.stderr)
         return 1
     maker = init_engine(get_settings().database_url)
     try:

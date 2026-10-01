@@ -1,3 +1,6 @@
+import uuid
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -9,7 +12,7 @@ from app.api.cookies import SESSION_COOKIE
 from app.core.config import Settings
 from app.core.crypto import SecretBox
 from app.core.tokens import hash_token
-from app.db.models import AuthSession, User
+from app.db.models import AuthSession, Project, ProjectMember, User
 from app.db.session import get_session
 from app.services.context import SessionContext
 
@@ -86,3 +89,40 @@ async def require_admin(user: CurrentUser) -> User:
 
 
 AdminUser = Annotated[User, Depends(require_admin)]
+
+ALL_ROLES = ("owner", "editor", "viewer", "client")
+INTERNAL_ROLES = ("owner", "editor", "viewer")
+
+
+@dataclass
+class ProjectContext:
+    project: Project
+    user: User
+    role: str
+
+
+def require_project_role(*allowed: str) -> Callable[..., Awaitable[ProjectContext]]:
+    async def dependency(project_id: uuid.UUID, user: CurrentUser, db: DbSession) -> ProjectContext:
+        project = await db.get(Project, project_id)
+        if project is None or project.archived_at is not None:
+            raise HTTPException(status_code=404, detail="Project not found.")
+        if user.is_admin:
+            role: str | None = "owner"
+        else:
+            role = await db.scalar(
+                select(ProjectMember.role).where(
+                    ProjectMember.project_id == project_id, ProjectMember.user_id == user.id
+                )
+            )
+        if role is None:
+            raise HTTPException(status_code=404, detail="Project not found.")
+        if role not in allowed:
+            raise HTTPException(status_code=403, detail="You do not have access to this action.")
+        return ProjectContext(project=project, user=user, role=role)
+
+    return dependency
+
+
+AnyMember = Annotated[ProjectContext, Depends(require_project_role(*ALL_ROLES))]
+InternalMember = Annotated[ProjectContext, Depends(require_project_role(*INTERNAL_ROLES))]
+ProjectOwner = Annotated[ProjectContext, Depends(require_project_role("owner"))]

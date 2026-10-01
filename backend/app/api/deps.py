@@ -68,3 +68,21 @@ async def mfa_context(ctx: SessionCtx) -> SessionContext:
 
 
 MfaCtx = Annotated[SessionContext, Depends(mfa_context)]
+
+
+async def current_user(ctx: MfaCtx) -> User:
+    if ctx.user.must_change_password:
+        raise HTTPException(status_code=403, detail="Password change required.")
+    return ctx.user
+
+
+CurrentUser = Annotated[User, Depends(current_user)]
+
+
+async def require_admin(user: CurrentUser) -> User:
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Administrator access required.")
+    return user
+
+
+AdminUser = Annotated[User, Depends(require_admin)]

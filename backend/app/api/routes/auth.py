@@ -3,8 +3,9 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from app.api.cookies import clear_session_cookie, set_session_cookie
-from app.api.deps import AppSettings, Box, DbSession, SessionCtx, auth_rate_limit
+from app.api.deps import AppSettings, Box, DbSession, MfaCtx, SessionCtx, auth_rate_limit
 from app.schemas.auth import (
+    ChangePasswordRequest,
     CodeRequest,
     EnrollResponse,
     LoginRequest,
@@ -13,7 +14,7 @@ from app.schemas.auth import (
     RecoveryCodesResponse,
 )
 from app.services import audit
-from app.services.auth import authenticate
+from app.services.auth import PasswordChangeError, authenticate, change_password
 from app.services.context import SessionContext
 from app.services.mfa import (
     MfaStateError,
@@ -108,3 +109,13 @@ async def mfa_verify(
     if not ok:
         raise HTTPException(status_code=401, detail="Invalid code.")
     return me_response(ctx)
+
+
+@router.post(
+    "/change-password", status_code=204, dependencies=[Depends(auth_rate_limit)]
+)
+async def change_password_route(body: ChangePasswordRequest, ctx: MfaCtx, db: DbSession) -> None:
+    try:
+        await change_password(db, ctx, body.current_password, body.new_password)
+    except PasswordChangeError as exc:
+        raise HTTPException(status_code=400, detail=exc.messages) from exc

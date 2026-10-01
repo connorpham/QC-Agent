@@ -1,15 +1,22 @@
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.core.emails import normalize_email
-from app.core.passwords import burn_password_check, verify_password
+from app.core.passwords import (
+    burn_password_check,
+    hash_password,
+    validate_new_password,
+    verify_password,
+)
 from app.core.tokens import hash_token, new_session_token
 from app.db.models import AuthSession, User
 from app.services import audit
+from app.services.context import SessionContext
 
 
 @dataclass
@@ -74,3 +81,44 @@ async def authenticate(
     await audit.record(db, "auth.login", user_id=user.id)
     await db.commit()
     return LoginResult(user=user, token=token, auth_session=auth_session)
+
+
+async def revoke_user_sessions(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    *,
+    except_session_id: uuid.UUID | None = None,
+    now: datetime | None = None,
+) -> None:
+    stmt = (
+        update(AuthSession)
+        .where(AuthSession.user_id == user_id, AuthSession.revoked_at.is_(None))
+        .values(revoked_at=now or datetime.now(UTC))
+    )
+    if except_session_id is not None:
+        stmt = stmt.where(AuthSession.id != except_session_id)
+    await db.execute(stmt)
+
+
+class PasswordChangeError(Exception):
+    def __init__(self, messages: list[str]) -> None:
+        super().__init__("; ".join(messages))
+        self.messages = messages
+
+
+async def change_password(
+    db: AsyncSession, ctx: SessionContext, current_password: str, new_password: str
+) -> None:
+    user = ctx.user
+    if not verify_password(user.password_hash, current_password):
+        raise PasswordChangeError(["Current password is incorrect."])
+    errors = validate_new_password(new_password, email=user.email)
+    if verify_password(user.password_hash, new_password):
+        errors.append("New password must differ from the current password.")
+    if errors:
+        raise PasswordChangeError(errors)
+    user.password_hash = hash_password(new_password)
+    user.must_change_password = False
+    await revoke_user_sessions(db, user.id, except_session_id=ctx.auth_session.id)
+    await audit.record(db, "auth.password_changed", user_id=user.id)
+    await db.commit()

@@ -17,7 +17,7 @@
 - API prefix `/api/v1`. All UI-facing copy and error messages in English.
 - Passwords hashed with Argon2id (`argon2-cffi` defaults). Minimum new password length 12.
 - MFA (TOTP, 6 digits, 30 s, issuer `QC-Agent`) is mandatory for every account; 10 one-time recovery codes.
-- Lockout: 5 consecutive failures (password or MFA) → locked 15 minutes. Auth endpoints rate-limited per client IP: 20 requests per 5 minutes.
+- Lockout: 5 consecutive failures (password or MFA) → locked 15 minutes; the counter resets only after a successful second factor, password change or admin reset. Auth endpoints rate-limited per client IP: 100 requests per 5 minutes (configurable).
 - Session cookie `qc_session`: opaque token, `HttpOnly`, `Secure` (configurable off only for localhost), `SameSite=Lax`, 8 h lifetime; token stored only as an HMAC-SHA256 hash.
 - Every state-changing `/api/` request must carry header `X-QC-Agent: 1` (CSRF guard).
 - Accounts are created by admins only; customer accounts (`account_type="customer"`) can never be admins and can only hold the project role `client`; internal accounts can never hold `client`.

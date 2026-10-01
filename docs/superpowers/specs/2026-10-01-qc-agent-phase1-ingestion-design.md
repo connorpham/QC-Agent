@@ -187,10 +187,10 @@ Each project has a root location chosen at project creation (a SharePoint docume
 <project root>/
 ├── project.yaml
 ├── 01-overview/
+├── 02-requirements/
 │   ├── srs--customer-portal.docx            # original (latest version; older versions in native history)
 │   ├── srs--customer-portal.md              # converted Markdown
 │   └── srs--customer-portal.normalized.md   # approved AI-normalised version (optional)
-├── 02-requirements/
 ├── 03-design/
 ├── 04-source/
 │   └── adr/
@@ -201,8 +201,6 @@ Each project has a root location chosen at project creation (a SharePoint docume
     ├── gap-report.md
     └── gap-report.json
 ```
-
-(The example file sits in `02-requirements` in practice; shown under `01-overview` only to illustrate the trio.)
 
 ### 5.2 Taxonomy (`templates/taxonomy.yaml`)
 

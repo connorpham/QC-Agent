@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
 from app.agent.analyzer import Analyzer, SkipAnalyzer
-from app.api.routes import auth, health, projects, uploads, users
+from app.api.routes import auth, documents, health, projects, uploads, users
 from app.api.routes import taxonomy as taxonomy_routes
 from app.core.config import Settings, get_settings
 from app.core.ratelimit import SlidingWindowLimiter
@@ -73,4 +73,5 @@ def create_app(settings: Settings | None = None, *, analyzer: Analyzer | None = 
     app.include_router(projects.router, prefix=API_PREFIX)
     app.include_router(taxonomy_routes.router, prefix=API_PREFIX)
     app.include_router(uploads.router, prefix=API_PREFIX)
+    app.include_router(documents.router, prefix=API_PREFIX)
     return app

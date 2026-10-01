@@ -1,11 +1,11 @@
-import hashlib
 import uuid
 
-from sqlalchemy import BigInteger, delete, func, literal, select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.core.slugs import slugify, unique_slug
+from app.db.locks import acquire_xact_lock
 from app.db.models import Project, ProjectMember, User
 from app.ingestion.taxonomy import Taxonomy
 from app.schemas.projects import MemberIn, MemberOut, ProjectSettings
@@ -18,15 +18,6 @@ class MemberValidationError(Exception):
     def __init__(self, message: str) -> None:
         super().__init__(message)
         self.message = message
-
-
-def advisory_key(namespace: str, value: str) -> int:
-    """Deterministic signed 64-bit key for ``pg_advisory_xact_lock``, stable across processes
-    (the lock key space is a plain bigint, so a namespace prefix keeps different lock uses from
-    colliding on the same hash)."""
-    digest = hashlib.sha256(f"{namespace}:{value}".encode()).digest()[:8]
-    unsigned = int.from_bytes(digest, "big")
-    return unsigned - 2**64 if unsigned >= 2**63 else unsigned
 
 
 async def create_project(
@@ -49,9 +40,7 @@ async def create_project(
     automatically when the transaction ends.
     """
     base = slugify(name)
-    await db.execute(
-        select(func.pg_advisory_xact_lock(literal(advisory_key("project-slug", base), BigInteger)))
-    )
+    await acquire_xact_lock(db, "project-slug", base)
     taken = set((await db.scalars(select(Project.slug).where(Project.slug.startswith(base)))).all())
     slug = unique_slug(base, taken)
     project = Project(

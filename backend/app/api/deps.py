@@ -12,7 +12,16 @@ from app.api.cookies import SESSION_COOKIE
 from app.core.config import Settings
 from app.core.crypto import SecretBox
 from app.core.tokens import hash_token
-from app.db.models import AuthSession, Document, Project, ProjectMember, User
+from app.db.models import (
+    INTERNAL_ROLES,
+    PROJECT_ROLES,
+    UPLOADER_ROLES,
+    AuthSession,
+    Document,
+    Project,
+    ProjectMember,
+    User,
+)
 from app.db.session import get_session
 from app.ingestion.taxonomy import Taxonomy
 from app.services.context import SessionContext
@@ -108,9 +117,6 @@ async def require_admin(user: CurrentUser) -> User:
 
 AdminUser = Annotated[User, Depends(require_admin)]
 
-ALL_ROLES = ("owner", "editor", "viewer", "client")
-INTERNAL_ROLES = ("owner", "editor", "viewer")
-
 
 @dataclass
 class ProjectContext:
@@ -145,10 +151,10 @@ def require_project_role(*allowed: str) -> Callable[..., Awaitable[ProjectContex
     return dependency
 
 
-AnyMember = Annotated[ProjectContext, Depends(require_project_role(*ALL_ROLES))]
+AnyMember = Annotated[ProjectContext, Depends(require_project_role(*PROJECT_ROLES))]
 InternalMember = Annotated[ProjectContext, Depends(require_project_role(*INTERNAL_ROLES))]
 ProjectOwner = Annotated[ProjectContext, Depends(require_project_role("owner"))]
-Uploader = Annotated[ProjectContext, Depends(require_project_role("owner", "editor", "client"))]
+Uploader = Annotated[ProjectContext, Depends(require_project_role(*UPLOADER_ROLES))]
 
 
 @dataclass

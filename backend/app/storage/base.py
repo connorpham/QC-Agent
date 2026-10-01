@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Protocol
 
 RESERVED_TOP_LEVEL = frozenset({".versions", ".trash"})
-_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+DRIVE_RE = re.compile(r"^[A-Za-z]:")  # a Windows drive prefix such as ``C:``
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
@@ -49,7 +49,7 @@ class HealthStatus:
 def normalize_path(path: str) -> str:
     if "\\" in path or _CONTROL_RE.search(path):
         raise StoragePathError("Path contains characters that are not allowed.")
-    if path.startswith("/") or _DRIVE_RE.match(path):
+    if path.startswith("/") or DRIVE_RE.match(path):
         raise StoragePathError("Path must be relative to the project root.")
     parts = [part for part in path.split("/") if part not in ("", ".")]
     if not parts:

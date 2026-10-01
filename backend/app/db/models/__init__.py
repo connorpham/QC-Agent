@@ -11,15 +11,25 @@ from app.db.models.ingestion import (
     Upload,
     UploadItem,
 )
-from app.db.models.projects import PROJECT_ROLES, Project, ProjectMember
+from app.db.models.projects import (
+    EDITOR_ROLES,
+    INTERNAL_ROLES,
+    PROJECT_ROLES,
+    UPLOADER_ROLES,
+    Project,
+    ProjectMember,
+)
 
 __all__ = [
     "ACCOUNT_TYPES",
+    "EDITOR_ROLES",
     "INTENTS",
+    "INTERNAL_ROLES",
     "ITEM_STATUSES",
     "PROJECT_ROLES",
     "TERMINAL_STATUSES",
     "TYPE_CHECKS",
+    "UPLOADER_ROLES",
     "VISIBILITIES",
     "AuditLog",
     "AuthSession",

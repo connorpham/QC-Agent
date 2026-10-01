@@ -18,14 +18,25 @@ from pathlib import Path, PurePosixPath
 
 import anyio
 
+from app.storage.base import DRIVE_RE
+
 ALLOWED_EXTENSIONS = frozenset({"docx", "pdf", "xlsx", "pptx", "md", "txt", "html", "csv", "zip"})
+CONTENT_TYPES = {
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "pdf": "application/pdf",
+    "md": "text/markdown",
+    "txt": "text/plain",
+    "html": "text/html",
+    "csv": "text/csv",
+}
 CHUNK_SIZE = 1024 * 1024
 MAX_FILENAME_LENGTH = 200
 ZIP_MAX_ENTRIES = 200
 _EXTENSION_ALIASES = {"htm": "html"}
 _UNSAFE_CHARS = re.compile(r"[^\w .()\-]", re.UNICODE)
 _WHITESPACE = re.compile(r"\s+")
-_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 UNUSABLE_ENTRY_NAME = "Archive entry has no usable file name."
 
 ReadChunk = Callable[[int], Awaitable[bytes]]
@@ -57,6 +68,10 @@ class StagedFile:
 class Rejection:
     name: str
     reason: str
+
+
+def content_type_for(ext: str) -> str:
+    return CONTENT_TYPES.get(ext, "application/octet-stream")
 
 
 def file_extension(name: str) -> str | None:
@@ -128,7 +143,7 @@ async def stage_stream(read: ReadChunk, dest: Path, *, max_bytes: int) -> tuple[
 def zip_entry_rejection(info: zipfile.ZipInfo, limits: IntakeLimits) -> Rejection | None:
     raw = info.filename.replace("\\", "/")
     parts = [part for part in raw.split("/") if part]
-    if not parts or raw.startswith("/") or _DRIVE_RE.match(raw) or ".." in parts:
+    if not parts or raw.startswith("/") or DRIVE_RE.match(raw) or ".." in parts:
         return Rejection(info.filename, "Zip entry path is not allowed.")
     if stat.S_ISLNK(info.external_attr >> 16):
         return Rejection(info.filename, "Symbolic links in zip archives are not allowed.")

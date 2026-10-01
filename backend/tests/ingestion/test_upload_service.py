@@ -186,8 +186,11 @@ async def test_create_upload_no_change_for_internal_user_and_all_rejected(
     await db.commit()
     upload_id = uuid.uuid4()
     staged, rejections = await stage_files(
-        [IncomingFile("same.docx", bytes_reader(SRS))],
-        [UploadItemSpec(doc_type="srs", intent="version", target_document_id=document.id)],
+        [IncomingFile("same.docx", bytes_reader(SRS)), IncomingFile("brd.docx", bytes_reader(SRS))],
+        [
+            UploadItemSpec(doc_type="srs", intent="version", target_document_id=document.id),
+            UploadItemSpec(doc_type="brd", intent="version", target_document_id=document.id),
+        ],
         staging_dir=staging_dir_for(staging_root, upload_id),
         limits=LIMITS,
     )
@@ -205,7 +208,8 @@ async def test_create_upload_no_change_for_internal_user_and_all_rejected(
         )
     assert excinfo.value.message == "No files were accepted."
     assert [r.reason for r in excinfo.value.rejections] == [
-        "No change: this file is identical to the current version."
+        "No change: this file is identical to the current version.",
+        "A new version must keep the document type of SRS.",
     ]
     assert (await db.scalars(select(Upload))).all() == []
     # the staging directory for this upload must be cleaned up since nothing was accepted

@@ -9,6 +9,9 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
 
 PROJECT_ROLES = ("owner", "editor", "viewer", "client")
+INTERNAL_ROLES = ("owner", "editor", "viewer")  # everyone but client accounts
+EDITOR_ROLES = ("owner", "editor")  # may edit documents
+UPLOADER_ROLES = ("owner", "editor", "client")  # may upload
 
 
 class Project(Base):
@@ -29,7 +32,7 @@ class Project(Base):
 class ProjectMember(Base):
     __tablename__ = "project_members"
     __table_args__ = (
-        CheckConstraint("role IN ('owner', 'editor', 'viewer', 'client')", name="role"),
+        CheckConstraint(f"role IN ({', '.join(repr(r) for r in PROJECT_ROLES)})", name="role"),
     )
 
     project_id: Mapped[uuid.UUID] = mapped_column(

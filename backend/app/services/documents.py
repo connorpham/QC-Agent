@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Document, DocumentVersion, User
+from app.db.models import EDITOR_ROLES, Document, DocumentVersion, User
 from app.ingestion.taxonomy import Taxonomy
 from app.ingestion.versioning import VersionCandidate, VersionSuggestion, suggest_versions
 from app.services import audit
@@ -94,7 +94,7 @@ async def update_document(
 ) -> None:
     """Owners change anything; editors rename and may share internal documents; viewers and
     clients cannot edit. Renaming never moves files in storage (paths follow the slug)."""
-    if role not in ("owner", "editor"):
+    if role not in EDITOR_ROLES:
         raise DocumentPermissionError("You do not have access to this action.")
     if document.is_stub:
         raise DocumentPermissionError("Stub documents cannot be edited.")

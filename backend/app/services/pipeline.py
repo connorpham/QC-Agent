@@ -24,6 +24,8 @@ from app.ingestion.taxonomy import Taxonomy, UnknownDocType
 from app.services import audit
 from app.services.publish import (
     MARKDOWN_SUFFIX,
+    NO_CHANGE_MESSAGE,
+    STAGED_FILE_MISSING,
     NoChange,
     PublishError,
     _publish_item,
@@ -35,10 +37,8 @@ from app.storage.select import backend_for
 logger = logging.getLogger(__name__)
 
 ACTIVE_STATUSES = ("uploaded", "converting", "checking", "publishing")
-NO_CHANGE_ERROR = "No change: this file is identical to the current version."
 LOW_TEXT_EXPLANATION = "The file has little extractable text; the type check was skipped."
 CHECK_FAILED_EXPLANATION = "The type check could not run; the selected type was kept."
-STAGED_FILE_MISSING = "Staged file is no longer available; upload the file again."
 PUBLISH_FAILED = "Publishing failed unexpectedly."
 PREVIEW_CHARS = 2000
 _background: set[asyncio.Task[None]] = set()
@@ -302,7 +302,7 @@ async def publish_item_by_id(
             )
         except NoChange:
             await db.rollback()
-            await _fail(db, item_id, project_id, "publishing", NO_CHANGE_ERROR)
+            await _fail(db, item_id, project_id, "publishing", NO_CHANGE_MESSAGE)
             return
         except (PublishError, StorageError) as exc:
             await db.rollback()

@@ -15,6 +15,7 @@ from app.api.deps import (
     Uploader,
 )
 from app.ingestion.gaps import build_gap_report
+from app.ingestion.intake import content_type_for
 from app.schemas.documents import (
     DocumentOut,
     DocumentUpdate,
@@ -22,7 +23,6 @@ from app.schemas.documents import (
     VersionSuggestionOut,
 )
 from app.services import documents as documents_service
-from app.services.publish import content_type_for
 from app.services.workspace import document_facts
 from app.storage.base import StorageError, StorageNotFound
 from app.storage.select import backend_for

@@ -3,7 +3,6 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, HTTPException
 
 from app.api.deps import (
-    INTERNAL_ROLES,
     AnyMember,
     AppSettings,
     CurrentUser,
@@ -12,7 +11,7 @@ from app.api.deps import (
     ProjectOwner,
     TaxonomyDep,
 )
-from app.db.models import Project
+from app.db.models import INTERNAL_ROLES, Project
 from app.schemas.projects import (
     LlmConsentOut,
     LlmConsentRequest,

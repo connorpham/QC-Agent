@@ -29,8 +29,11 @@ from app.ingestion.naming import title_from_filename
 from app.ingestion.taxonomy import Taxonomy, UnknownDocType
 from app.schemas.uploads import UploadItemSpec
 from app.services import audit
+from app.services.publish import NO_CHANGE_MESSAGE
 
-NO_CHANGE_REASON = "No change: this file is identical to the current version."
+
+def version_type_mismatch(title: str) -> str:
+    return f"A new version must keep the document type of {title}."
 
 
 class UploadError(Exception):
@@ -129,10 +132,7 @@ async def _version_target_rejection(
         return Rejection(item.file.name, "Target document not found.")
     assert target is not None  # noqa: S101 - narrowed above for the type checker
     if target.doc_type != spec.doc_type:
-        return Rejection(
-            item.file.name,
-            "The new version must have the same document type as the existing document.",
-        )
+        return Rejection(item.file.name, version_type_mismatch(target.title))
     current = await db.scalar(
         select(DocumentVersion).where(
             DocumentVersion.document_id == target.id,
@@ -140,7 +140,7 @@ async def _version_target_rejection(
         )
     )
     if current is not None and current.sha256 == item.file.sha256:
-        return Rejection(item.file.name, NO_CHANGE_REASON)
+        return Rejection(item.file.name, NO_CHANGE_MESSAGE)
     return None
 
 
@@ -279,7 +279,7 @@ async def confirm_type(
     if item.intent == "version" and item.target_document_id is not None:
         target = await db.get(Document, item.target_document_id)
         if target is not None and doc_type.key != target.doc_type:
-            raise ItemStateError(f"A new version must keep the document type of {target.title}.")
+            raise ItemStateError(version_type_mismatch(target.title))
     item.final_doc_type = doc_type.key
     item.type_check = (
         "mismatch_kept" if doc_type.key == item.selected_doc_type else "mismatch_changed"

@@ -20,7 +20,6 @@ from app.ingestion.taxonomy import Taxonomy
 from app.schemas.uploads import UploadItemSpec
 from app.services import publish as publish_module
 from app.services.pipeline import (
-    NO_CHANGE_ERROR,
     check_items,
     convert_item,
     publish_item_by_id,
@@ -451,7 +450,7 @@ async def test_no_change_detected_under_the_lock_fails_the_item(
     db.expire_all()
     first, second = [(await list_items(db, upload_id))[0] for upload_id in upload_ids]
     assert first.status == "published"
-    assert second.status == "failed" and second.error == NO_CHANGE_ERROR
+    assert second.status == "failed" and second.error == publish_module.NO_CHANGE_MESSAGE
     await db.refresh(document)
     assert document.current_version == 2
 

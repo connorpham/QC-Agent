@@ -15,18 +15,19 @@ regenerates them.
 """
 
 import asyncio
-import hashlib
 import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
-from sqlalchemy import BigInteger, func, literal, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.slugs import unique_slug
+from app.db.locks import acquire_xact_lock
 from app.db.models import Document, DocumentVersion, Project, Upload, UploadItem, User
+from app.ingestion.intake import content_type_for
 from app.ingestion.naming import (
     Frontmatter,
     markdown_path,
@@ -45,21 +46,14 @@ from app.storage.base import StorageBackend, StorageNotFound
 
 logger = logging.getLogger(__name__)
 
-CONTENT_TYPES = {
-    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "pdf": "application/pdf",
-    "md": "text/markdown",
-    "txt": "text/plain",
-    "html": "text/html",
-    "csv": "text/csv",
-}
+NO_CHANGE_MESSAGE = "No change: this file is identical to the current version."
+STAGED_FILE_MISSING = "Staged file is no longer available; upload the file again."
 MARKDOWN_SUFFIX = ".md"  # converted text sits next to the staged original: <staging_path>.md
 
 
 class NoChange(Exception):
-    """The uploaded file is byte-identical to the document's current version."""
+    """The uploaded file is byte-identical to the document's current version
+    (``NO_CHANGE_MESSAGE``)."""
 
 
 class PublishError(Exception):
@@ -68,20 +62,9 @@ class PublishError(Exception):
         self.message = message
 
 
-def content_type_for(ext: str) -> str:
-    return CONTENT_TYPES.get(ext, "application/octet-stream")
-
-
-def project_lock_key(project_id: uuid.UUID) -> int:
-    digest = hashlib.sha256(project_id.bytes).digest()
-    return int.from_bytes(digest[:8], "big", signed=True)
-
-
 async def acquire_project_lock(db: AsyncSession, project_id: uuid.UUID) -> None:
     """Transaction-scoped advisory lock; released automatically at commit or rollback."""
-    await db.execute(
-        select(func.pg_advisory_xact_lock(literal(project_lock_key(project_id), BigInteger)))
-    )
+    await acquire_xact_lock(db, "project", str(project_id))
 
 
 async def _taken_slugs(db: AsyncSession, project_id: uuid.UUID, doc_type: DocType) -> set[str]:
@@ -249,7 +232,7 @@ async def _publish_item(
             staged.with_name(staged.name + MARKDOWN_SUFFIX).read_text, encoding="utf-8"
         )
     except FileNotFoundError as exc:
-        raise PublishError("Staged file is no longer available; upload the file again.") from exc
+        raise PublishError(STAGED_FILE_MISSING) from exc
 
     if item.intent == "version":
         document = (

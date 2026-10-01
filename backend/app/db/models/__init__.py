@@ -19,6 +19,7 @@ from app.db.models.projects import (
     Project,
     ProjectMember,
 )
+from app.db.models.storage import STORAGE_TYPES, StorageConnection
 
 __all__ = [
     "ACCOUNT_TYPES",
@@ -27,6 +28,7 @@ __all__ = [
     "INTERNAL_ROLES",
     "ITEM_STATUSES",
     "PROJECT_ROLES",
+    "STORAGE_TYPES",
     "TERMINAL_STATUSES",
     "TYPE_CHECKS",
     "UPLOADER_ROLES",
@@ -37,6 +39,7 @@ __all__ = [
     "DocumentVersion",
     "Project",
     "ProjectMember",
+    "StorageConnection",
     "Upload",
     "UploadItem",
     "User",

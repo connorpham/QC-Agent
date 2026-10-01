@@ -163,3 +163,23 @@ async def test_unknown_user_is_404(
     _, admin = await _admin_client(make_client, db, settings)
     response = await admin.post("/api/v1/users/00000000-0000-0000-0000-000000000000/reset-mfa")
     assert response.status_code == 404
+
+
+async def test_user_directory_lists_active_users_for_internal_accounts(
+    make_client: MakeClient, db: AsyncSession, settings: Settings
+) -> None:
+    alice = await make_user(db, settings)
+    await make_user(db, settings, email="bob@example.com", display_name="Bob")
+    await make_user(db, settings, email="gone@example.com", display_name="Gone", is_active=False)
+    customer = await make_user(
+        db, settings, email="c@client.com", display_name="Cara", account_type="customer"
+    )
+    alice_c = await make_client(await make_session_token(db, settings, alice))
+    response = await alice_c.get("/api/v1/users/directory")
+    assert response.status_code == 200
+    rows = response.json()
+    assert [r["display_name"] for r in rows] == ["Alice", "Bob", "Cara"]
+    assert set(rows[0]) == {"id", "email", "display_name", "account_type"}
+    assert rows[0]["id"] == str(alice.id) and rows[2]["account_type"] == "customer"
+    customer_c = await make_client(await make_session_token(db, settings, customer))
+    assert (await customer_c.get("/api/v1/users/directory")).status_code == 403

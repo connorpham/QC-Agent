@@ -6,7 +6,7 @@
 | Date | 2026-10-01 |
 | Author | Connor Pham (TECHVIFY) with Claude |
 | Phase | 1 of 5 — Ingestion & Structure |
-| Revision | v2 replaces v1 (same day): user selects document type at upload; AI verifies, versions and normalises; SharePoint and Google Drive storage; customers as users; internet hosting with MFA |
+| Revision | v2.1 (2026-10-01): storage configured in the UI by admins, chosen per project by owners, changeable later via migration (8.5). v2 replaces v1 (same day): user selects document type at upload; AI verifies, versions and normalises; SharePoint and Google Drive storage; customers as users; internet hosting with MFA |
 
 ---
 
@@ -445,9 +445,14 @@ All adapters pass one shared contract test suite (run against local FS always; a
 
 For development and CI; stores under `LOCAL_STORAGE_ROOT`; versions as `.versions/<path>/<n>`.
 
-### 8.5 Connections
+### 8.5 Connections and project binding (revised 2026-10-01, v2.1)
 
-Admins create **storage connections** (type, display name, credentials). Secrets (client secret, service-account JSON) are encrypted at rest with a key from `SECRET_ENCRYPTION_KEY` (Fernet). A project is bound to one connection and one root location at creation; changing it later is out of scope for Phase 1.
+Storage is configured from the web UI, not only through the API.
+
+- **Admins** manage **storage connections** on an Admin → Storage page: type (`localfs` now; `sharepoint`, `gdrive` in Plan 3b), display name, non-secret configuration, and write-only secrets (client secret, service-account JSON) encrypted at rest with `SECRET_ENCRYPTION_KEY` (Fernet). Secrets are never returned by any API. Each connection has a **Test connection** action (adapter `health()`), an active flag, and exactly one connection is the **default**.
+- On first start the system creates a default `localfs` connection rooted at `LOCAL_STORAGE_ROOT` if none exists; existing projects are bound to it by migration.
+- **Owners** (internal users creating a project) choose an active connection from a dropdown and may set the project's root folder within it (default: the project slug). Only connection id, name and type are visible to non-admins.
+- **Changing a project's storage later is supported** (Plan 3c): an owner starts a storage migration to another connection; the project becomes read-only (`migrating`), a background job copies every document version in order (original and Markdown, oldest first) plus stubs and reports to the new location, verifies each file by SHA-256, then switches the binding atomically. The old location is left untouched for rollback. A failed migration leaves the project on its old storage, writable, with the error shown in the UI.
 
 ### 8.6 Access to storage
 
@@ -475,8 +480,9 @@ Users have `account_type` `internal` or `customer`; customer accounts can only h
 |---|---|
 | `users` | id, email, password_hash (Argon2id), display_name, account_type, is_admin, must_change_password, mfa_secret_enc, mfa_enabled, recovery_codes_hash[], failed_logins, locked_until, is_active |
 | `auth_sessions` | id, user_id, token_hash, mfa_verified, expires_at, revoked_at, ip, user_agent |
-| `storage_connections` | id, type (`sharepoint`/`gdrive`/`localfs`), name, config jsonb, secret_enc, created_by |
-| `projects` | id, slug, name, client_name, storage_connection_id, storage_root jsonb, settings jsonb, created_by, archived_at |
+| `storage_connections` | id, type (`localfs`/`sharepoint`/`gdrive`), name, config jsonb, secret_enc, is_default, is_active, created_by, created_at, updated_at |
+| `storage_migrations` (Plan 3c) | id, project_id, from_connection_id, to_connection_id, to_root, status (`running`/`succeeded`/`failed`), progress jsonb, error, started_by, started_at, finished_at |
+| `projects` | id, slug, name, client_name, storage jsonb (`{connection_id, root, provisioned_at}`, see 8.5), settings jsonb, created_by, archived_at |
 | `project_members` | project_id, user_id, role |
 | `uploads` | id, project_id, uploaded_by, repo_ref, created_at |
 | `upload_items` | id, upload_id, original_name, ext, size, sha256, staging_path, selected_doc_type, final_doc_type, title, intent (`new`/`version`), target_document_id, visibility, status, type_check, check_explanation, suggested_doc_type, conversion_meta jsonb, error |
@@ -518,8 +524,9 @@ Every document endpoint enforces role and visibility; client users receive 404 f
 6. **Type confirmation** dialog: selected type, AI explanation, suggested type, keep / change.
 7. **Draft review**: side-by-side source and draft, section source references, Markdown editor, approve / discard.
 8. Gap report (internal only).
-9. Project settings (owner): members, model, budgets, storage root (read-only after creation).
-10. Admin: users, storage connections (with "Test connection").
+9. Project settings (owner): members, model, budgets, storage (connection and root; "Change storage" starts a migration with progress, Plan 3c).
+10. Admin: users; Storage connections (list, create, edit non-secret config, replace secret, set default, deactivate, "Test connection").
+11. Create project dialog: name, client, storage connection dropdown (default preselected), optional root folder.
 
 English UI; strings in one messages file.
 

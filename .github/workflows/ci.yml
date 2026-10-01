@@ -96,3 +96,92 @@ jobs:
           if grep -q " 0 commits scanned" /tmp/gitleaks.log; then
             echo "::error::gitleaks scanned no commits"; exit 1
           fi
+
+  frontend:
+    name: Frontend (lint, format, types, unit tests, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v6
+        with:
+          # the action looks at the repository root by default; the version lives
+          # in frontend/package.json "packageManager"
+          package_json_file: frontend/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm format
+      - run: pnpm typecheck
+      - run: pnpm test
+      - name: Generated API types match the committed OpenAPI document
+        run: pnpm api:check
+      - run: pnpm build
+
+  e2e:
+    name: End-to-end (Playwright, real backend)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: qc
+          POSTGRES_PASSWORD: qc  # CI-only throwaway database
+          POSTGRES_DB: qc_agent
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U qc -d qc_agent"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      QC_E2E_DATABASE_URL: postgresql+asyncpg://qc:qc@localhost:5432/qc_agent_e2e
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Install backend dependencies
+        run: uv sync --locked
+        working-directory: backend
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: frontend/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: frontend
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+      - run: pnpm exec playwright install --with-deps chromium
+        working-directory: frontend
+      - name: Build the frontend against the e2e backend port
+        run: BACKEND_URL=http://localhost:8001 pnpm build
+        working-directory: frontend
+      - name: Run the end-to-end suite
+        run: pnpm exec playwright test
+        working-directory: frontend
+        env:
+          CI: "true"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: frontend/playwright-report
+          retention-days: 7

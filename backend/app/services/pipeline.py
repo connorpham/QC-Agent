@@ -32,7 +32,7 @@ from app.services.publish import (
     _StorageChanges,
 )
 from app.storage.base import StorageBackend, StorageError
-from app.storage.select import backend_for
+from app.storage.select import project_backend
 
 logger = logging.getLogger(__name__)
 
@@ -289,7 +289,7 @@ async def publish_item_by_id(
         uploader = await db.get_one(User, upload.uploaded_by)
         project_id, uploader_id = project.id, uploader.id
         try:
-            backend = backend_for(project.storage, ctx.settings)
+            backend = await project_backend(db, project, ctx.settings)
             version, changes = await _publish_item(
                 db,
                 item=item,

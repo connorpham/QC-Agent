@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.storage.base import StoragePathError, validate_root_segment
+
 
 class ProjectSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -31,11 +33,23 @@ def _clean_name(value: str) -> str:
 class ProjectCreate(BaseModel):
     name: str = Field(max_length=200)
     client_name: str | None = Field(default=None, max_length=200)
+    storage_connection_id: uuid.UUID | None = None  # default: the default connection
+    storage_root: str | None = Field(default=None, max_length=80)  # default: the slug
 
     @field_validator("name")
     @classmethod
     def _name(cls, value: str) -> str:
         return _clean_name(value)
+
+    @field_validator("storage_root")
+    @classmethod
+    def _root(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        try:
+            return validate_root_segment(value.strip())
+        except StoragePathError as exc:
+            raise ValueError(str(exc)) from exc
 
 
 class ProjectUpdate(BaseModel):
@@ -50,6 +64,8 @@ class ProjectUpdate(BaseModel):
 
 
 class ProjectStorageOut(BaseModel):
+    connection_id: uuid.UUID
+    connection_name: str
     type: str
     root: str
 

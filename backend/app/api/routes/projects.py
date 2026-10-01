@@ -1,3 +1,5 @@
+import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException
@@ -11,7 +13,7 @@ from app.api.deps import (
     ProjectOwner,
     TaxonomyDep,
 )
-from app.db.models import INTERNAL_ROLES, Project
+from app.db.models import INTERNAL_ROLES, Project, StorageConnection
 from app.schemas.projects import (
     LlmConsentOut,
     LlmConsentRequest,
@@ -26,6 +28,7 @@ from app.schemas.projects import (
 from app.services import audit
 from app.services import consent as consent_service
 from app.services import projects as projects_service
+from app.services import storage_connections as connections_service
 from app.storage.base import StorageError
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -40,7 +43,36 @@ def _consent_out(project: Project) -> LlmConsentOut | None:
     )
 
 
-def _out(project: Project, role: str) -> ProjectOut:
+def _connection_id(project: Project) -> uuid.UUID | None:
+    raw = project.storage.get("connection_id")
+    if not isinstance(raw, str):
+        return None
+    try:
+        return uuid.UUID(raw)
+    except ValueError:
+        return None
+
+
+def storage_out(
+    project: Project, connections: Mapping[uuid.UUID, StorageConnection]
+) -> ProjectStorageOut | None:
+    """The binding as internal roles see it; None when the connection row is gone."""
+    connection_id = _connection_id(project)
+    root = project.storage.get("root")
+    connection = connections.get(connection_id) if connection_id is not None else None
+    if connection is None or not isinstance(root, str):
+        return None
+    return ProjectStorageOut(
+        connection_id=connection.id,
+        connection_name=connection.name,
+        type=connection.type,
+        root=root,
+    )
+
+
+def _out(
+    project: Project, role: str, connections: Mapping[uuid.UUID, StorageConnection]
+) -> ProjectOut:
     internal = role in INTERNAL_ROLES
     return ProjectOut(
         id=project.id,
@@ -50,18 +82,17 @@ def _out(project: Project, role: str) -> ProjectOut:
         created_at=project.created_at,
         my_role=role,
         settings=ProjectSettings(**project.settings) if internal else None,
-        storage=(
-            ProjectStorageOut(type=project.storage["type"], root=project.storage["root"])
-            if internal and project.storage
-            else None
-        ),
+        storage=storage_out(project, connections) if internal else None,
         llm_consent=_consent_out(project),
     )
 
 
 @router.get("", response_model=list[ProjectOut])
 async def list_projects(user: CurrentUser, db: DbSession) -> list[ProjectOut]:
-    return [_out(p, role) for p, role in await projects_service.list_projects_for(db, user)]
+    connections = await connections_service.connections_by_id(db)
+    return [
+        _out(p, role, connections) for p, role in await projects_service.list_projects_for(db, user)
+    ]
 
 
 @router.post("", response_model=ProjectOut, status_code=201)
@@ -82,18 +113,22 @@ async def create_project(
             creator=user,
             settings=settings,
             taxonomy=taxonomy,
+            connection_id=body.storage_connection_id,
+            root=body.storage_root,
         )
+    except projects_service.ProjectValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.message) from exc
     except StorageError as exc:
         raise HTTPException(
             status_code=503, detail="Storage is unavailable; the project was not created."
         ) from exc
     await db.refresh(project)
-    return _out(project, "owner")
+    return _out(project, "owner", await connections_service.connections_by_id(db))
 
 
 @router.get("/{project_id}", response_model=ProjectOut)
-async def get_project(ctx: AnyMember) -> ProjectOut:
-    return _out(ctx.project, ctx.role)
+async def get_project(ctx: AnyMember, db: DbSession) -> ProjectOut:
+    return _out(ctx.project, ctx.role, await connections_service.connections_by_id(db))
 
 
 @router.patch("/{project_id}", response_model=ProjectOut)
@@ -116,7 +151,7 @@ async def update_project(body: ProjectUpdate, ctx: ProjectOwner, db: DbSession) 
         details={"fields": sorted(body.model_fields_set)},
     )
     await db.commit()
-    return _out(project, ctx.role)
+    return _out(project, ctx.role, await connections_service.connections_by_id(db))
 
 
 @router.delete("/{project_id}", status_code=204)

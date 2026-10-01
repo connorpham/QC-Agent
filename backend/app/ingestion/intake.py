@@ -11,6 +11,7 @@ import re
 import stat
 import uuid
 import zipfile
+import zlib
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -98,20 +99,25 @@ def batch_limit_reason(limits: IntakeLimits) -> str:
 
 async def stage_stream(read: ReadChunk, dest: Path, *, max_bytes: int) -> tuple[int, str] | None:
     """Stream to ``dest`` while hashing. Returns (size, sha256) or None when the cap is exceeded
-    (the partial file is removed)."""
+    (the partial file is removed). The partial file is also removed if ``read`` or the write
+    raises for any reason."""
     await asyncio.to_thread(dest.parent.mkdir, parents=True, exist_ok=True)
     digest = hashlib.sha256()
     size = 0
-    async with await anyio.open_file(dest, "wb") as handle:
-        while True:
-            chunk = await read(CHUNK_SIZE)
-            if not chunk:
-                break
-            size += len(chunk)
-            if size > max_bytes:
-                break
-            digest.update(chunk)
-            await handle.write(chunk)
+    try:
+        async with await anyio.open_file(dest, "wb") as handle:
+            while True:
+                chunk = await read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > max_bytes:
+                    break
+                digest.update(chunk)
+                await handle.write(chunk)
+    except BaseException:
+        await asyncio.to_thread(dest.unlink, missing_ok=True)
+        raise
     if size > max_bytes:
         await asyncio.to_thread(dest.unlink, missing_ok=True)
         return None
@@ -143,21 +149,31 @@ def _is_hidden(info: zipfile.ZipInfo) -> bool:
     return not parts or parts[0] == "__MACOSX" or parts[-1].startswith(".")
 
 
+class _CorruptEntry(Exception):
+    """A zip entry failed to decompress or extract cleanly (bad CRC-32, bad deflate stream, or a
+    truncated entry). Raised internally by ``_extract_entry`` and always caught inside
+    ``expand_zip``."""
+
+
 def _extract_entry(
     archive: zipfile.ZipFile, info: zipfile.ZipInfo, dest: Path, limits: IntakeLimits
 ) -> tuple[int, str] | None:
     digest = hashlib.sha256()
     size = 0
-    with archive.open(info) as source, dest.open("wb") as handle:
-        while True:
-            chunk = source.read(CHUNK_SIZE)
-            if not chunk:
-                break
-            size += len(chunk)
-            if size > limits.max_file_bytes:
-                break
-            digest.update(chunk)
-            handle.write(chunk)
+    try:
+        with archive.open(info) as source, dest.open("wb") as handle:
+            while True:
+                chunk = source.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > limits.max_file_bytes:
+                    break
+                digest.update(chunk)
+                handle.write(chunk)
+    except (zipfile.BadZipFile, zlib.error, EOFError) as exc:
+        dest.unlink(missing_ok=True)
+        raise _CorruptEntry(info.filename) from exc
     if size > limits.max_file_bytes:
         dest.unlink(missing_ok=True)
         return None
@@ -193,15 +209,25 @@ def expand_zip(
             ext = file_extension(name)
             if ext is None:
                 continue
-            if total + info.file_size > limits.max_batch_bytes:
+            # The batch cap is enforced only against bytes actually extracted below: the zip's
+            # declared ``file_size`` is attacker-controlled and is never trusted for accounting.
+            if total >= limits.max_batch_bytes:
                 rejections.append(Rejection(info.filename, batch_limit_reason(limits)))
                 continue
             dest = dest_dir / f"{uuid.uuid4().hex}.{ext}"
-            extracted = _extract_entry(archive, info, dest, limits)
+            try:
+                extracted = _extract_entry(archive, info, dest, limits)
+            except _CorruptEntry:
+                rejections.append(Rejection(info.filename, "Archive entry is corrupted."))
+                continue
             if extracted is None:
                 rejections.append(Rejection(info.filename, size_limit_reason(limits)))
                 continue
             size, sha256 = extracted
+            if total + size > limits.max_batch_bytes:
+                dest.unlink(missing_ok=True)
+                rejections.append(Rejection(info.filename, batch_limit_reason(limits)))
+                continue
             total += size
             files.append(StagedFile(name=name, ext=ext, path=dest, size=size, sha256=sha256))
     return files, rejections

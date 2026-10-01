@@ -121,6 +121,7 @@ async def change_password(
         raise PasswordChangeError(errors)
     user.password_hash = hash_password(new_password)
     user.must_change_password = False
+    user.failed_logins = 0
     await revoke_user_sessions(db, user.id, except_session_id=ctx.auth_session.id)
     await audit.record(db, "auth.password_changed", user_id=user.id)
     await db.commit()

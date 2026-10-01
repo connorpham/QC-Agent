@@ -62,6 +62,8 @@ async def test_change_password_success_revokes_other_sessions(
 ) -> None:
     _with_probe_routes(app)
     user = await make_user(db, settings, must_change_password=True)
+    user.failed_logins = 3
+    await db.commit()
     other = await make_client(await make_session_token(db, settings, user))
     current = await make_client(await make_session_token(db, settings, user))
     response = await current.post(
@@ -75,6 +77,7 @@ async def test_change_password_success_revokes_other_sessions(
     assert refreshed is not None
     assert refreshed.must_change_password is False
     assert verify_password(refreshed.password_hash, NEW_PASSWORD)
+    assert refreshed.failed_logins == 0
 
 
 async def test_change_password_rejects_wrong_current(

@@ -11,7 +11,9 @@
     "format:write": "prettier --write .",
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "api:generate": "openapi-typescript openapi.json -o src/lib/api/schema.d.ts",
+    "api:check": "pnpm api:generate && git diff --exit-code -- src/lib/api/schema.d.ts"
   },
   "dependencies": {
     "next": "16.3.7",

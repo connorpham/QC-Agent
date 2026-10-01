@@ -1,4 +1,5 @@
 import pytest
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -8,6 +9,7 @@ from app.db.models import (
     DocumentVersion,
     Project,
     ProjectMember,
+    StorageConnection,
     Upload,
     UploadItem,
     User,
@@ -161,6 +163,27 @@ async def test_upload_item_status_is_constrained(db: AsyncSession) -> None:
             status="teleporting",
         )
     )
+    with pytest.raises(IntegrityError):
+        await db.commit()
+
+
+async def test_storage_connection_defaults_and_single_default(db: AsyncSession) -> None:
+    default = (await db.scalars(select(StorageConnection))).one()  # created by the fixture
+    assert default.is_default is True and default.is_active is True
+    assert default.secret_enc is None and default.created_by is None
+    second = StorageConnection(type="localfs", name="Archive", config={"root_path": "archive"})
+    db.add(second)
+    await db.commit()
+    assert second.is_default is False and second.is_active is True
+    assert second.created_at is not None and second.updated_at is not None
+    second.is_default = True  # a second default violates the partial unique index
+    with pytest.raises(IntegrityError):
+        await db.commit()
+    await db.rollback()
+
+
+async def test_storage_connection_type_is_constrained(db: AsyncSession) -> None:
+    db.add(StorageConnection(type="ftp", name="Old", config={}))
     with pytest.raises(IntegrityError):
         await db.commit()
 

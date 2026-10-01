@@ -56,7 +56,9 @@ async def test_unknown_email_audits_without_leaking_the_email(
     client: AsyncClient, db: AsyncSession, settings: Settings
 ) -> None:
     await _login(client, "nobody@example.com")
-    rows = (await db.scalars(select(AuditLog))).all()
+    # Excludes the "storage_connection.created" row the db_sessionmaker fixture produces via
+    # ensure_default_connection; that one is unrelated system setup, not login auditing.
+    rows = (await db.scalars(select(AuditLog).where(AuditLog.action.like("auth.%")))).all()
     assert len(rows) == 1
     row = rows[0]
     assert row.action == "auth.login_failed_unknown"

@@ -3,6 +3,7 @@ confirmation; uploads stay blocked until then (checked in test_uploads)."""
 
 import asyncio
 import json
+import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
@@ -20,7 +21,7 @@ from app.services.projects import create_project
 from app.services.workspace import ensure_workspace
 from app.storage.base import StorageError
 from app.storage.localfs import LocalFsBackend
-from app.storage.select import backend_for
+from app.storage.select import project_backend
 from tests.factories import add_member, make_project, make_session_token, make_user
 
 MakeClient = Callable[..., Awaitable[AsyncClient]]
@@ -34,7 +35,10 @@ async def test_project_creation_provisions_workspace(
     response = await c.post("/api/v1/projects", json={"name": "Dự án Cổng Khách hàng"})
     assert response.status_code == 201
     body = response.json()
-    assert body["storage"] == {"type": "localfs", "root": "du-an-cong-khach-hang"}
+    assert body["storage"]["connection_name"] == "Local storage"
+    assert body["storage"]["type"] == "localfs"
+    assert body["storage"]["root"] == "du-an-cong-khach-hang"
+    assert uuid.UUID(body["storage"]["connection_id"])
     assert body["llm_consent"] is None
     root = storage_root / "du-an-cong-khach-hang"
     for folder in (
@@ -72,7 +76,7 @@ async def test_ensure_workspace_is_idempotent_and_repairs_missing_stub(
     project = await make_project(db, settings, taxonomy, owner=owner, name="Demo")
     stub_file = storage_root / "demo/02-requirements/srs.md"
     stub_file.unlink()
-    backend = backend_for(project.storage, settings)
+    backend = await project_backend(db, project, settings)
     await ensure_workspace(db, project=project, backend=backend, taxonomy=taxonomy, actor=owner)
     await db.commit()
     assert stub_file.exists()

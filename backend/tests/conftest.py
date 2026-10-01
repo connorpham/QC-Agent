@@ -38,6 +38,7 @@ from app.db.base import Base  # noqa: E402
 from app.db.session import dispose_engine, init_engine  # noqa: E402
 from app.ingestion.taxonomy import Taxonomy, load_taxonomy  # noqa: E402
 from app.main import create_app  # noqa: E402
+from app.services.storage_connections import ensure_default_connection  # noqa: E402
 
 BASE_URL = "http://testserver"
 CSRF = {"X-QC-Agent": "1"}
@@ -85,6 +86,7 @@ async def db_sessionmaker() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
     async with maker() as session:
         await session.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
         await session.commit()
+        await ensure_default_connection(session)  # what the application lifespan does
     for root in (os.environ["LOCAL_STORAGE_ROOT"], os.environ["STAGING_ROOT"]):
         shutil.rmtree(root, ignore_errors=True)
         os.makedirs(root, exist_ok=True)

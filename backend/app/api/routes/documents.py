@@ -25,7 +25,7 @@ from app.schemas.documents import (
 from app.services import documents as documents_service
 from app.services.workspace import document_facts
 from app.storage.base import StorageError, StorageNotFound
-from app.storage.select import backend_for
+from app.storage.select import project_backend
 
 router = APIRouter(tags=["documents"])
 
@@ -126,7 +126,7 @@ async def download_original(
     if row.original_path is None or row.original_storage_version is None:
         raise HTTPException(status_code=404, detail="Stub documents have no original file.")
     try:
-        backend = backend_for(ctx.project.storage, settings)
+        backend = await project_backend(db, ctx.project, settings)
         data = await backend.get_version(row.original_path, row.original_storage_version)
     except StorageNotFound as exc:
         raise HTTPException(status_code=404, detail="File is not available in storage.") from exc

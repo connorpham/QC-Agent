@@ -11,9 +11,10 @@ from app.api.routes import auth, documents, health, projects, uploads, users
 from app.api.routes import taxonomy as taxonomy_routes
 from app.core.config import Settings, get_settings
 from app.core.ratelimit import SlidingWindowLimiter
-from app.db.session import dispose_engine, init_engine, is_initialised
+from app.db.session import dispose_engine, get_sessionmaker, init_engine, is_initialised
 from app.ingestion.taxonomy import load_taxonomy
 from app.services.pipeline import PipelineContext, cancel_background, requeue_stale_items
+from app.services.storage_connections import ensure_default_connection
 
 API_PREFIX = "/api/v1"
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
@@ -33,6 +34,8 @@ def create_app(settings: Settings | None = None, *, analyzer: Analyzer | None = 
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         if not is_initialised():
             init_engine(app_settings.database_url)
+        async with get_sessionmaker()() as db:
+            await ensure_default_connection(db)
         requeued = await requeue_stale_items(pipeline)
         if requeued:
             logger.info("Re-queued %d upload items left in progress", requeued)

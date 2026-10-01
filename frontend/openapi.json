@@ -753,6 +753,15 @@
       },
       "ProjectStorageOut": {
         "properties": {
+          "connection_id": {
+            "format": "uuid",
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
           "root": {
             "title": "Root",
             "type": "string"
@@ -763,6 +772,8 @@
           }
         },
         "required": [
+          "connection_id",
+          "connection_name",
           "type",
           "root"
         ],

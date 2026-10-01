@@ -31,6 +31,8 @@ FORWARDED_ALLOW_IPS=10.0.0.5 uv run uvicorn --factory app.main:create_app --prox
 
 ## Tests
 
+CI (GitHub Actions, `.github/workflows/ci.yml`) runs the same gates on every pull request and on pushes to `main`: ruff, mypy strict, `alembic upgrade head` + `alembic check`, pytest against PostgreSQL 16, and a gitleaks scan of the full history.
+
 Activate the pre-commit hooks once (from the repository root) so the gitleaks secret scan,
 ruff and mypy run on every commit:
 

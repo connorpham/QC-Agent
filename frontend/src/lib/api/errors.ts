@@ -1,5 +1,9 @@
 import { m } from "@/messages";
 
+/** pydantic prefixes a validator's own message ("Value error, Name is required."); readers
+ * only want the sentence. */
+const PYDANTIC_PREFIX = /^(Value error|Assertion failed), /;
+
 /** Message from a FastAPI error body: `{"detail": "..."}`, `{"detail": ["...", ...]}` or the
  * 422 shape `{"detail": [{"msg": "...", ...}]}`. */
 export function apiErrorMessage(error: unknown, fallback: string): string {
@@ -11,7 +15,7 @@ export function apiErrorMessage(error: unknown, fallback: string): string {
         .map((item) => {
           if (typeof item === "string") return item;
           if (item && typeof item === "object" && "msg" in item) {
-            return String((item as { msg: unknown }).msg);
+            return String((item as { msg: unknown }).msg).replace(PYDANTIC_PREFIX, "");
           }
           return "";
         })

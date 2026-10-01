@@ -127,14 +127,16 @@ export function StorageAdmin() {
                           {m.storage.setDefault}
                         </Button>
                       ) : null}
-                      <Button
-                        variant={connection.is_active ? "danger" : "secondary"}
-                        onClick={() =>
-                          void patch(connection, { is_active: !connection.is_active }, null)
-                        }
-                      >
-                        {connection.is_active ? m.storage.deactivate : m.storage.reactivate}
-                      </Button>
+                      {connection.is_default ? null : ( // the backend always refuses this
+                        <Button
+                          variant={connection.is_active ? "danger" : "secondary"}
+                          onClick={() =>
+                            void patch(connection, { is_active: !connection.is_active }, null)
+                          }
+                        >
+                          {connection.is_active ? m.storage.deactivate : m.storage.reactivate}
+                        </Button>
+                      )}
                       <Button
                         variant="secondary"
                         busy={result === "running"}

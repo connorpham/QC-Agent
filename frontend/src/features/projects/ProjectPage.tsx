@@ -107,7 +107,7 @@ export function ProjectPage({ projectId }: { projectId: string }) {
                 <span className="text-muted">{m.projects.type}</span>
                 <span className="text-muted">{m.projects.root}</span>
                 <span>{project.storage.connection_name}</span>
-                <span>{project.storage.type}</span>
+                <span>{m.storage.typeLabels[project.storage.type] ?? project.storage.type}</span>
                 <span className="font-mono">{project.storage.root}</span>
               </dd>
             </div>

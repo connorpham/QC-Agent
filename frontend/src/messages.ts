@@ -144,7 +144,6 @@ export const m = {
     resetPassword: "Reset password",
     resetMfa: "Reset MFA",
     mfaReset: "MFA reset. The user enrols again at the next sign-in.",
-    created: "User created.",
     tempPasswordTitle: "Temporary password",
     tempPasswordIntro:
       "Give this password to the user through a secure channel. It is shown only once; the user must change it at the first sign-in.",
@@ -171,7 +170,6 @@ export const m = {
     deactivate: "Deactivate",
     reactivate: "Reactivate",
     test: "Test connection",
-    testing: "Testing…",
     testOk: "Connection OK",
     testFailed: "Connection failed",
     rootPath: "Root path",

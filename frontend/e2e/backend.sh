@@ -11,6 +11,16 @@ import asyncpg
 
 url = os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://")
 server, name = url.rsplit("/", 1)
+name = name.split("?", 1)[0]
+
+# This script drops the database it is pointed at. Only a disposable e2e database may be named,
+# so a stray DATABASE_URL (the dev or test database, or production) cannot be destroyed here.
+if not name.endswith("e2e"):
+    raise SystemExit(
+        f"Refusing to drop database {name!r}: the end-to-end database name must end in 'e2e'. "
+        "Set QC_E2E_DATABASE_URL to a disposable database, for example "
+        "postgresql+asyncpg://qc:qc@localhost:5434/qc_agent_e2e."
+    )
 
 
 async def main() -> None:

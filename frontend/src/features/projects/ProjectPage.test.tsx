@@ -39,7 +39,9 @@ it("shows storage to internal roles and lets an owner record the consent", async
   render(withSession(<ProjectPage projectId={PID} />, memberMe).element);
   expect(await screen.findByRole("heading", { name: "Demo" })).toBeInTheDocument();
   expect(screen.getByText("Archive")).toBeInTheDocument();
-  expect(screen.getByText("localfs")).toBeInTheDocument();
+  // the storage type is shown with the same label as the create dialog and the admin page
+  expect(screen.getByText("Local filesystem")).toBeInTheDocument();
+  expect(screen.queryByText("localfs")).toBeNull();
   expect(screen.getByText("demo")).toBeInTheDocument();
   expect(screen.getByRole("tab", { name: "Members" })).toBeInTheDocument();
   expect(screen.getByRole("tab", { name: "Settings" })).toBeInTheDocument();

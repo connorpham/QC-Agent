@@ -1,9 +1,15 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { expect, it, vi } from "vitest";
+import { StrictMode } from "react";
+import { beforeEach, expect, it, vi } from "vitest";
 import { mockFetch } from "@/test/fetch-mock";
 import { adminMe } from "@/test/session";
 import { MfaEnrol } from "./MfaEnrol";
+
+const { replace } = vi.hoisted(() => ({ replace: vi.fn() }));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ replace, push: vi.fn() }) }));
+
+beforeEach(() => replace.mockClear());
 
 vi.mock("qrcode", () => ({
   default: { toDataURL: vi.fn().mockResolvedValue("data:image/png;base64,QR") },
@@ -64,4 +70,57 @@ it("shows the backend message for a wrong code and stays on the scan step", asyn
   await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("Invalid code.");
   expect(screen.queryByRole("heading", { name: "Recovery codes" })).not.toBeInTheDocument();
+});
+
+it("enrols once per mount under React StrictMode", async () => {
+  const f = routes();
+  render(
+    <StrictMode>
+      <MfaEnrol onDone={vi.fn()} />
+    </StrictMode>,
+  );
+  await screen.findByLabelText("Authentication code");
+  const enrolments = f.calls.filter(
+    (c) => c.method === "POST" && new URL(c.url).pathname === "/api/v1/auth/mfa/enroll",
+  );
+  expect(enrolments).toHaveLength(1);
+});
+
+it("sends the user to /login when the enrolment request finds no session", async () => {
+  mockFetch([
+    {
+      method: "POST",
+      path: "/api/v1/auth/mfa/enroll",
+      status: 401,
+      body: { detail: "Not authenticated." },
+    },
+  ]);
+  render(<MfaEnrol onDone={vi.fn()} />);
+  await waitFor(() => expect(replace).toHaveBeenCalledWith("/login"));
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("sends the user to /login when the session dies before the code is confirmed", async () => {
+  mockFetch([
+    {
+      method: "POST",
+      path: "/api/v1/auth/mfa/enroll",
+      body: {
+        secret: "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP",
+        otpauth_uri:
+          "otpauth://totp/QC-Agent:a%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=QC-Agent",
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/v1/auth/mfa/confirm",
+      status: 401,
+      body: { detail: "Not authenticated." },
+    },
+  ]);
+  render(<MfaEnrol onDone={vi.fn()} />);
+  await userEvent.type(await screen.findByLabelText("Authentication code"), "123456");
+  await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
+  await waitFor(() => expect(replace).toHaveBeenCalledWith("/login"));
+  expect(screen.queryByRole("heading", { name: "Recovery codes" })).toBeNull();
 });

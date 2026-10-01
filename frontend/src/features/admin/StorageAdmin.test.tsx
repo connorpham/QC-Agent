@@ -60,9 +60,10 @@ it("lists connections, creates a localfs connection and tests it", async () => {
   expect(await within(archiveRow).findByRole("status")).toHaveTextContent("Connection OK");
 });
 
-it("sets a default and shows a 409 when deactivation is refused", async () => {
+it("sets a default, keeps the default out of reach of Deactivate, and shows a 409", async () => {
+  const old = { ...archive, id: "c-old", name: "Old" };
   const f = mockFetch([
-    { path: "/api/v1/storage-connections", body: [archive, local] },
+    { path: "/api/v1/storage-connections", body: [archive, local, old] },
     {
       method: "PATCH",
       path: "/api/v1/storage-connections/c-archive",
@@ -70,19 +71,19 @@ it("sets a default and shows a 409 when deactivation is refused", async () => {
     },
     {
       method: "PATCH",
-      path: "/api/v1/storage-connections/c-local",
+      path: "/api/v1/storage-connections/c-old",
       status: 409,
-      body: {
-        detail:
-          "The default connection cannot be deactivated. Set another connection as the default first.",
-      },
+      body: { detail: "This connection is used by 1 active project and cannot be deactivated." },
     },
   ]);
   render(<StorageAdmin />);
   const archiveRow = (await screen.findByRole("cell", { name: "Archive" })).closest("tr")!;
   await userEvent.click(within(archiveRow).getByRole("button", { name: "Set as default" }));
   expect(await f.body(1)).toEqual({ is_default: true });
+  // The backend always refuses to deactivate the default, so the button is not offered.
   const localRow = screen.getByRole("cell", { name: "Local storage" }).closest("tr")!;
-  await userEvent.click(within(localRow).getByRole("button", { name: "Deactivate" }));
+  expect(within(localRow).queryByRole("button", { name: "Deactivate" })).toBeNull();
+  const oldRow = screen.getByRole("cell", { name: "Old" }).closest("tr")!;
+  await userEvent.click(within(oldRow).getByRole("button", { name: "Deactivate" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("cannot be deactivated");
 });

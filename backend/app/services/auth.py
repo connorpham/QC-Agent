@@ -47,6 +47,8 @@ async def authenticate(
     user = await db.scalar(select(User).where(User.email == normalize_email(email)))
     if user is None or not user.is_active:
         burn_password_check(password)
+        await audit.record(db, "auth.login_failed_unknown")
+        await db.commit()
         return None
     if is_locked(user, moment):
         burn_password_check(password)

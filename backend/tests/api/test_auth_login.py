@@ -52,6 +52,18 @@ async def test_wrong_password_and_unknown_email_share_one_message(
     assert wrong.json() == unknown.json() == {"detail": "Invalid e-mail or password."}
 
 
+async def test_unknown_email_audits_without_leaking_the_email(
+    client: AsyncClient, db: AsyncSession, settings: Settings
+) -> None:
+    await _login(client, "nobody@example.com")
+    rows = (await db.scalars(select(AuditLog))).all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.action == "auth.login_failed_unknown"
+    assert row.user_id is None
+    assert "nobody@example.com" not in str(row.details)
+
+
 async def test_lockout_after_five_failures(
     client: AsyncClient, db: AsyncSession, settings: Settings
 ) -> None:

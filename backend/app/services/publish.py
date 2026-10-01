@@ -8,8 +8,10 @@ has a document version is returned as-is (checked under the lock).
 Storage is written before the caller commits. If anything fails after the first storage write,
 ``publish_item`` puts storage back the way it found it (best effort) and re-raises: a new
 version's paths get the previous version's bytes again, a new document's paths are trashed and
-a trashed stub is restored. The reports are not re-rendered on failure (that would need the
-rolled-back session); the next successful publish regenerates them.
+a trashed stub (or a previous original with another extension) is restored. The pipeline uses
+``_publish_item`` to get the same undo when its own commit fails. The reports are not
+re-rendered on failure (that would need the rolled-back session); the next successful publish
+regenerates them.
 """
 
 import asyncio
@@ -98,17 +100,22 @@ async def _taken_slugs(db: AsyncSession, project_id: uuid.UUID, doc_type: DocTyp
 
 @dataclass
 class _StorageChanges:
-    """What one publish changed in storage, so a failure before commit can undo it."""
+    """What one publish changed in storage, so a failure before (or during) commit can undo it."""
 
     # path -> storage version id of the content it held before (None: unknown, leave it)
     previous: dict[str, str | None] = field(default_factory=dict)
     written: list[tuple[str, str]] = field(default_factory=list)  # (path, content type)
-    trashed_stub: tuple[str, bytes] | None = None
+    trashed: list[tuple[str, bytes, str]] = field(default_factory=list)  # (path, data, type)
 
     async def undo(self, backend: StorageBackend, document_id: uuid.UUID) -> None:
         """Best effort; every step runs even if an earlier one fails. Logs ids and error
-        classes only."""
+        classes only. A path written twice (a .md upload: original and converted text share
+        it) is undone once."""
+        seen: set[str] = set()
         for path, content_type in reversed(self.written):
+            if path in seen:
+                continue
+            seen.add(path)
             prior = self.previous.get(path)
             try:
                 if path not in self.previous:
@@ -125,16 +132,19 @@ class _StorageChanges:
                     document_id,
                     type(exc).__name__,
                 )
-        if self.trashed_stub is not None:
-            path, data = self.trashed_stub
+        for path, data, content_type in self.trashed:
             try:
-                await backend.put_file(path, data, "text/markdown")
+                await backend.put_file(path, data, content_type)
             except Exception as exc:
                 logger.error(
-                    "Could not restore the stub for document %s (%s)",
+                    "Could not restore a trashed file for document %s (%s)",
                     document_id,
                     type(exc).__name__,
                 )
+
+    async def trash(self, backend: StorageBackend, path: str, data: bytes, ext: str) -> None:
+        await backend.move_to_trash(path)
+        self.trashed.append((path, data, content_type_for(ext)))
 
 
 async def _remove_unchanged_stub(
@@ -164,10 +174,20 @@ async def _remove_unchanged_stub(
         current = None
     if current is None or sha256_hex(current) == version.sha256:
         if current is not None:
-            await backend.move_to_trash(version.markdown_path)
-            changes.trashed_stub = (version.markdown_path, current)
+            await changes.trash(backend, version.markdown_path, current, "md")
         await db.delete(stub)
         await db.flush()
+
+
+async def _trash_replaced_original(
+    backend: StorageBackend, path: str, changes: _StorageChanges
+) -> None:
+    """A new version with another extension: the previous original must not stay live."""
+    try:
+        data = await backend.get_file(path)
+    except StorageNotFound:
+        return
+    await changes.trash(backend, path, data, PurePosixPath(path).suffix.lstrip("."))
 
 
 async def publish_item(
@@ -182,13 +202,41 @@ async def publish_item(
     staging_root: Path,
     now: datetime | None = None,
 ) -> DocumentVersion:
+    version, _ = await _publish_item(
+        db,
+        item=item,
+        upload=upload,
+        project=project,
+        uploader=uploader,
+        backend=backend,
+        taxonomy=taxonomy,
+        staging_root=staging_root,
+        now=now,
+    )
+    return version
+
+
+async def _publish_item(
+    db: AsyncSession,
+    *,
+    item: UploadItem,
+    upload: Upload,
+    project: Project,
+    uploader: User,
+    backend: StorageBackend,
+    taxonomy: Taxonomy,
+    staging_root: Path,
+    now: datetime | None = None,
+) -> tuple[DocumentVersion, _StorageChanges]:
+    """``publish_item`` plus the storage changes it made, so a caller whose commit fails can
+    undo them (an already-published item returns no changes)."""
     moment = now or datetime.now(UTC)
     await acquire_project_lock(db, project.id)
     existing = await db.scalar(
         select(DocumentVersion).where(DocumentVersion.upload_item_id == item.id)
     )
     if existing is not None:
-        return existing
+        return existing, _StorageChanges()
     if not is_provisioned(project):
         await ensure_workspace(
             db, project=project, backend=backend, taxonomy=taxonomy, actor=uploader, now=moment
@@ -218,6 +266,7 @@ async def publish_item(
         if current is not None and current.sha256 == item.sha256:
             raise NoChange()
         changes = _StorageChanges()
+        replaced_original = current.original_path if current is not None else None
         if current is not None:
             for path, storage_version in (
                 (current.original_path, current.original_storage_version),
@@ -243,6 +292,7 @@ async def publish_item(
         await db.flush()
         version = 1
         changes = _StorageChanges()
+        replaced_original = None
 
     orig_path = original_path(doc_type, document.slug, item.ext)
     md_path = markdown_path(doc_type, document.slug)
@@ -272,6 +322,8 @@ async def publish_item(
             md_path, markdown_text.encode("utf-8"), "text/markdown"
         )
         changes.written.append((md_path, "text/markdown"))
+        if replaced_original is not None and replaced_original not in (orig_path, md_path):
+            await _trash_replaced_original(backend, replaced_original, changes)
         document_version = DocumentVersion(
             document_id=document.id,
             version=version,
@@ -293,4 +345,4 @@ async def publish_item(
     except BaseException:
         await changes.undo(backend, document_id)
         raise
-    return document_version
+    return document_version, changes

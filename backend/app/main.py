@@ -13,7 +13,7 @@ from app.core.config import Settings, get_settings
 from app.core.ratelimit import SlidingWindowLimiter
 from app.db.session import dispose_engine, init_engine, is_initialised
 from app.ingestion.taxonomy import load_taxonomy
-from app.services.pipeline import PipelineContext, requeue_stale_items
+from app.services.pipeline import PipelineContext, cancel_background, requeue_stale_items
 
 API_PREFIX = "/api/v1"
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
@@ -37,6 +37,7 @@ def create_app(settings: Settings | None = None, *, analyzer: Analyzer | None = 
         if requeued:
             logger.info("Re-queued %d upload items left in progress", requeued)
         yield
+        await cancel_background()  # requeued work must not outlive the engine
         await dispose_engine()
 
     app = FastAPI(

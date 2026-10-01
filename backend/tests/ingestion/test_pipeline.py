@@ -310,3 +310,104 @@ async def test_requeued_task_crash_is_logged_with_ids_only(
     assert "secret document text" not in record.getMessage()
     assert record.exc_info is None  # the exception class is named; its message is not logged
     assert "RuntimeError" in record.getMessage()
+
+
+async def test_crash_logs_name_the_error_class_without_message_or_traceback(
+    db: AsyncSession,
+    settings: Settings,
+    taxonomy: Taxonomy,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    owner = await make_user(db, settings)
+    project = await make_project(db, settings, taxonomy, owner=owner)
+
+    def leaky(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("SECRET-CONTENT")
+
+    async def leaky_async(*args: object, **kwargs: object) -> None:
+        leaky()
+
+    scenarios = [
+        # conversion crash
+        ({"convert": leaky}, None, ("a.docx", SRS)),
+        # analyzer crash (the type check is skipped, the item still publishes)
+        ({}, FakeAnalyzer(error=RuntimeError("SECRET-CONTENT")), ("b.docx", PLAN)),
+        # publish crash
+        ({"publish": leaky_async}, None, ("c.md", b"# C\n\nSome text for the check.\n")),
+    ]
+    for patches, analyzer, file in scenarios:
+        with monkeypatch.context() as patch:
+            if "convert" in patches:
+                patch.setattr(pipeline, "convert_file", patches["convert"])
+            if "publish" in patches:
+                patch.setattr(pipeline, "_publish_item", patches["publish"])
+            caplog.clear()
+            with caplog.at_level(logging.DEBUG, logger="app.services.pipeline"):
+                await ingest(
+                    db,
+                    settings,
+                    taxonomy,
+                    project=project,
+                    uploader=owner,
+                    role="owner",
+                    files=[file],
+                    specs=[UploadItemSpec(doc_type="srs")],
+                    analyzer=analyzer,
+                )
+        errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert len(errors) == 1, file[0]
+        assert "RuntimeError" in errors[0].getMessage()
+        assert all("SECRET-CONTENT" not in r.getMessage() for r in caplog.records)
+        assert all(r.exc_info is None for r in caplog.records)
+
+
+async def test_convert_item_reports_a_lost_second_transition(
+    db: AsyncSession, settings: Settings, taxonomy: Taxonomy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner = await make_user(db, settings)
+    project = await make_project(db, settings, taxonomy, owner=owner)
+    upload, _, _ = await ingest(
+        db,
+        settings,
+        taxonomy,
+        project=project,
+        uploader=owner,
+        role="owner",
+        files=[("srs.docx", SRS)],
+        specs=[UploadItemSpec(doc_type="srs")],
+        run=False,
+    )
+    item_id = (await list_items(db, upload.id))[0].id
+    real_transition = pipeline.transition
+
+    async def lost_race(
+        session: AsyncSession,
+        target: uuid.UUID,
+        from_statuses: object,
+        to_status: str,
+        **kw: object,
+    ) -> bool:
+        if to_status == "checking":
+            return False  # someone else moved the item meanwhile
+        return await real_transition(session, target, from_statuses, to_status, **kw)
+
+    monkeypatch.setattr(pipeline, "transition", lost_race)
+    ctx = pipeline_context(settings, taxonomy)
+    assert await convert_item(ctx, get_sessionmaker(), item_id) is False
+
+
+async def test_cancel_background_stops_pending_tasks() -> None:
+    started = asyncio.Event()
+
+    async def forever() -> None:
+        started.set()
+        await asyncio.sleep(3600)
+
+    pipeline._spawn(forever(), "upload", uuid.uuid4())
+    await started.wait()
+    tasks = set(pipeline._background)
+    assert tasks
+    await pipeline.cancel_background()
+    assert pipeline._background == set()
+    assert all(task.cancelled() for task in tasks)

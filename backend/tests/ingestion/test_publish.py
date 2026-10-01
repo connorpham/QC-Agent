@@ -4,6 +4,7 @@ reports, idempotency. Files go through the real intake and pipeline with the Ski
 import asyncio
 import hashlib
 import json
+import logging
 import uuid
 from pathlib import Path
 
@@ -29,7 +30,7 @@ from app.services.uploads import list_items
 from app.storage.base import StorageError
 from app.storage.localfs import LocalFsBackend
 from tests.factories import make_project, make_user
-from tests.helpers.files import docx_bytes
+from tests.helpers.files import docx_bytes, pdf_bytes
 from tests.helpers.ingest import ingest, pipeline_context
 
 SRS_V1 = docx_bytes(["The system shall allow users to log in with a password and a one-time code."])
@@ -480,3 +481,197 @@ async def test_storage_error_during_publish_fails_the_item(
         await db.scalars(select(AuditLog).where(AuditLog.action == "upload_item.failed"))
     ).all()
     assert len(failed) == 1
+
+
+def _fail_next_commit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the next ``AsyncSession.commit`` raise (as a lost connection would); later commits
+    run normally."""
+    original = AsyncSession.commit
+    state = {"armed": True}
+
+    async def commit(self: AsyncSession) -> None:
+        if state["armed"]:
+            state["armed"] = False
+            raise ConnectionResetError("simulated commit failure")
+        await original(self)
+
+    monkeypatch.setattr(AsyncSession, "commit", commit)
+
+
+async def test_commit_failure_after_new_document_publish_undoes_storage(
+    db: AsyncSession,
+    settings: Settings,
+    taxonomy: Taxonomy,
+    storage_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner, project = await _setup(db, settings, taxonomy)
+    upload, _, _ = await ingest(
+        db,
+        settings,
+        taxonomy,
+        project=project,
+        uploader=owner,
+        role="owner",
+        files=[("srs.docx", SRS_V1)],
+        specs=[UploadItemSpec(doc_type="srs", title="Portal SRS")],
+        run=False,
+    )
+    upload_id = upload.id
+    await _to_publishing(settings, taxonomy, upload_id)
+    item_id = (await list_items(db, upload_id))[0].id
+    _fail_next_commit(monkeypatch)
+    await publish_item_by_id(pipeline_context(settings, taxonomy), get_sessionmaker(), item_id)
+    db.expire_all()
+    item = await db.get_one(UploadItem, item_id)
+    assert item.status == "failed" and item.error == "Publishing failed unexpectedly."
+    root = storage_root / "demo"
+    assert not (root / "02-requirements/srs--portal-srs.docx").exists()
+    assert not (root / "02-requirements/srs--portal-srs.md").exists()
+    assert (root / "02-requirements/srs.md").exists()
+    assert (await db.scalars(select(Document).where(Document.is_stub.is_(False)))).all() == []
+    assert (
+        await db.scalars(select(DocumentVersion).where(DocumentVersion.upload_item_id == item_id))
+    ).all() == []
+
+
+async def test_commit_failure_after_version_publish_restores_previous_files(
+    db: AsyncSession,
+    settings: Settings,
+    taxonomy: Taxonomy,
+    storage_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner, project = await _setup(db, settings, taxonomy)
+    await ingest(
+        db,
+        settings,
+        taxonomy,
+        project=project,
+        uploader=owner,
+        role="owner",
+        files=[("srs.docx", SRS_V1)],
+        specs=[UploadItemSpec(doc_type="srs", title="Portal SRS")],
+    )
+    document = (await db.scalars(select(Document).where(Document.slug == "portal-srs"))).one()
+    document_id = document.id
+    root = storage_root / "demo"
+    markdown_before = (root / "02-requirements/srs--portal-srs.md").read_bytes()
+    upload, _, _ = await ingest(
+        db,
+        settings,
+        taxonomy,
+        project=project,
+        uploader=owner,
+        role="owner",
+        files=[("srs-v2.docx", SRS_V2)],
+        specs=[UploadItemSpec(doc_type="srs", intent="version", target_document_id=document_id)],
+        run=False,
+    )
+    upload_id = upload.id
+    await _to_publishing(settings, taxonomy, upload_id)
+    item_id = (await list_items(db, upload_id))[0].id
+    _fail_next_commit(monkeypatch)
+    await publish_item_by_id(pipeline_context(settings, taxonomy), get_sessionmaker(), item_id)
+    db.expire_all()
+    assert (await db.get_one(UploadItem, item_id)).status == "failed"
+    assert (await db.get_one(Document, document_id)).current_version == 1
+    assert (root / "02-requirements/srs--portal-srs.docx").read_bytes() == SRS_V1
+    assert (root / "02-requirements/srs--portal-srs.md").read_bytes() == markdown_before
+
+
+def _live_srs_files(root: Path) -> list[str]:
+    return sorted(p.name for p in (root / "02-requirements").glob("srs--portal-srs.*"))
+
+
+async def test_version_with_another_extension_trashes_the_previous_original(
+    db: AsyncSession, settings: Settings, taxonomy: Taxonomy, storage_root: Path
+) -> None:
+    owner, project = await _setup(db, settings, taxonomy)
+    await ingest(
+        db,
+        settings,
+        taxonomy,
+        project=project,
+        uploader=owner,
+        role="owner",
+        files=[("srs.docx", SRS_V1)],
+        specs=[UploadItemSpec(doc_type="srs", title="Portal SRS")],
+    )
+    document = (await db.scalars(select(Document).where(Document.slug == "portal-srs"))).one()
+    _, items, _ = await ingest(
+        db,
+        settings,
+        taxonomy,
+        project=project,
+        uploader=owner,
+        role="owner",
+        files=[("srs.pdf", pdf_bytes(["The system shall allow users to log in with MFA."]))],
+        specs=[UploadItemSpec(doc_type="srs", intent="version", target_document_id=document.id)],
+    )
+    assert items[0].status == "published"
+    root = storage_root / "demo"
+    assert _live_srs_files(root) == ["srs--portal-srs.md", "srs--portal-srs.pdf"]
+    assert (root / ".trash/02-requirements/srs--portal-srs.docx").read_bytes() == SRS_V1
+
+
+async def test_failed_version_with_another_extension_restores_the_previous_original(
+    db: AsyncSession,
+    settings: Settings,
+    taxonomy: Taxonomy,
+    storage_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner, project = await _setup(db, settings, taxonomy)
+    await ingest(
+        db,
+        settings,
+        taxonomy,
+        project=project,
+        uploader=owner,
+        role="owner",
+        files=[("srs.docx", SRS_V1)],
+        specs=[UploadItemSpec(doc_type="srs", title="Portal SRS")],
+    )
+    document = (await db.scalars(select(Document).where(Document.slug == "portal-srs"))).one()
+    monkeypatch.setattr(publish_module, "refresh_reports", _boom)
+    _, items, _ = await ingest(
+        db,
+        settings,
+        taxonomy,
+        project=project,
+        uploader=owner,
+        role="owner",
+        files=[("srs.pdf", pdf_bytes(["The system shall allow users to log in with MFA."]))],
+        specs=[UploadItemSpec(doc_type="srs", intent="version", target_document_id=document.id)],
+    )
+    assert items[0].status == "failed"
+    root = storage_root / "demo"
+    assert _live_srs_files(root) == ["srs--portal-srs.docx", "srs--portal-srs.md"]
+    assert (root / "02-requirements/srs--portal-srs.docx").read_bytes() == SRS_V1
+
+
+async def test_failed_markdown_publish_undoes_the_shared_path_once(
+    db: AsyncSession,
+    settings: Settings,
+    taxonomy: Taxonomy,
+    storage_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    owner, project = await _setup(db, settings, taxonomy)
+    monkeypatch.setattr(publish_module, "refresh_reports", _boom)
+    with caplog.at_level(logging.ERROR, logger="app.services.publish"):
+        _, items, _ = await ingest(
+            db,
+            settings,
+            taxonomy,
+            project=project,
+            uploader=owner,
+            role="owner",
+            files=[("notes.md", b"# Notes\n\nSome text.\n")],
+            specs=[UploadItemSpec(doc_type="overview/other", title="Notes")],
+        )
+    assert items[0].status == "failed"
+    assert not (storage_root / "demo/01-overview/other--notes.md").exists()
+    assert [r.getMessage() for r in caplog.records if r.name == "app.services.publish"] == []

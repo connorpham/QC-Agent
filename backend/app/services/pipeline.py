@@ -22,8 +22,14 @@ from app.db.session import get_sessionmaker
 from app.ingestion.converters import LOW_TEXT, ConversionError, convert_file
 from app.ingestion.taxonomy import Taxonomy, UnknownDocType
 from app.services import audit
-from app.services.publish import MARKDOWN_SUFFIX, NoChange, PublishError, publish_item
-from app.storage.base import StorageError
+from app.services.publish import (
+    MARKDOWN_SUFFIX,
+    NoChange,
+    PublishError,
+    _publish_item,
+    _StorageChanges,
+)
+from app.storage.base import StorageBackend, StorageError
 from app.storage.select import backend_for
 
 logger = logging.getLogger(__name__)
@@ -33,6 +39,7 @@ NO_CHANGE_ERROR = "No change: this file is identical to the current version."
 LOW_TEXT_EXPLANATION = "The file has little extractable text; the type check was skipped."
 CHECK_FAILED_EXPLANATION = "The type check could not run; the selected type was kept."
 STAGED_FILE_MISSING = "Staged file is no longer available; upload the file again."
+PUBLISH_FAILED = "Publishing failed unexpectedly."
 PREVIEW_CHARS = 2000
 _background: set[asyncio.Task[None]] = set()
 
@@ -108,14 +115,15 @@ async def convert_item(
         except FileNotFoundError:
             await _fail(db, item_id, project_id, "converting", STAGED_FILE_MISSING)
             return False
-        except Exception:
-            logger.exception("Conversion crashed for upload item %s", item_id)
+        except Exception as exc:
+            # ids and the error class only: exception messages may quote document content
+            logger.error("Conversion of upload item %s crashed (%s)", item_id, type(exc).__name__)
             await _fail(db, item_id, project_id, "converting", "Conversion failed unexpectedly.")
             return False
         meta = {**result.meta.to_dict(), "warnings": list(result.warnings)}
-        await transition(db, item_id, ("converting",), "checking", conversion_meta=meta)
+        moved = await transition(db, item_id, ("converting",), "checking", conversion_meta=meta)
         await db.commit()
-        return True
+        return moved
 
 
 async def _preview(ctx: PipelineContext, item: UploadItem) -> str:
@@ -226,8 +234,8 @@ async def check_items(
         try:
             result = await ctx.analyzer.check(batch)
             verdicts = {v.item_id: v for v in result.verdicts}
-        except Exception:
-            logger.exception("Type check failed for upload %s", upload_id)
+        except Exception as exc:
+            logger.error("Type check for upload %s crashed (%s)", upload_id, type(exc).__name__)
         known = {d.document_id for d in batch.existing_documents}
         for item in to_check:
             verdict = verdicts.get(item.id)
@@ -282,7 +290,7 @@ async def publish_item_by_id(
         project_id, uploader_id = project.id, uploader.id
         try:
             backend = backend_for(project.storage, ctx.settings)
-            version = await publish_item(
+            version, changes = await _publish_item(
                 db,
                 item=item,
                 upload=upload,
@@ -300,22 +308,53 @@ async def publish_item_by_id(
             await db.rollback()
             await _fail(db, item_id, project_id, "publishing", str(exc))
             return
-        except Exception:
-            logger.exception("Publishing crashed for upload item %s", item_id)
+        except Exception as exc:
+            logger.error("Publishing upload item %s crashed (%s)", item_id, type(exc).__name__)
             await db.rollback()
-            await _fail(db, item_id, project_id, "publishing", "Publishing failed unexpectedly.")
+            await _fail(db, item_id, project_id, "publishing", PUBLISH_FAILED)
             return
-        if await transition(db, item_id, ("publishing",), "published", error=None):
-            await audit.record(
-                db,
-                "upload_item.published",
-                user_id=uploader_id,
-                project_id=project_id,
-                target_type="document",
-                target_id=str(version.document_id),
-                details={"upload_item_id": str(item_id), "version": version.version},
-            )
-        await db.commit()
+        document_id = version.document_id  # plain id: a rollback below expires ``version``
+        try:
+            if await transition(db, item_id, ("publishing",), "published", error=None):
+                await audit.record(
+                    db,
+                    "upload_item.published",
+                    user_id=uploader_id,
+                    project_id=project_id,
+                    target_type="document",
+                    target_id=str(document_id),
+                    details={"upload_item_id": str(item_id), "version": version.version},
+                )
+            await db.commit()
+        except BaseException as exc:
+            # The storage writes are not covered by the rolled-back transaction: undo them and
+            # leave the item failed (retryable) instead of stuck in ``publishing``.
+            logger.error("Committing upload item %s failed (%s)", item_id, type(exc).__name__)
+            await _undo_failed_commit(db, changes, backend, document_id, item_id, project_id)
+            if not isinstance(exc, Exception):
+                raise
+
+
+async def _undo_failed_commit(
+    db: AsyncSession,
+    changes: _StorageChanges,
+    backend: StorageBackend,
+    document_id: uuid.UUID,
+    item_id: uuid.UUID,
+    project_id: uuid.UUID,
+) -> None:
+    """Best effort: every step runs even if an earlier one fails."""
+    try:
+        await db.rollback()
+    except Exception as exc:
+        logger.error("Rollback for upload item %s failed (%s)", item_id, type(exc).__name__)
+    await changes.undo(backend, document_id)
+    try:
+        await _fail(db, item_id, project_id, "publishing", PUBLISH_FAILED)
+    except Exception as exc:
+        logger.error(
+            "Marking upload item %s failed did not succeed (%s)", item_id, type(exc).__name__
+        )
 
 
 async def run_upload(
@@ -350,6 +389,15 @@ def _spawn(coro: Coroutine[Any, Any, None], kind: str, target_id: uuid.UUID) -> 
             logger.error("Requeued %s %s crashed (%s)", kind, target_id, type(exc).__name__)
 
     task.add_done_callback(done)
+
+
+async def cancel_background() -> None:
+    """Cancel the requeued tasks still running and wait for them (application shutdown)."""
+    tasks = list(_background)
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    _background.difference_update(tasks)
 
 
 async def requeue_stale_items(ctx: PipelineContext) -> int:

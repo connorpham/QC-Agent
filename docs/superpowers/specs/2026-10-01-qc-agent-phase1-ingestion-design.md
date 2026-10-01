@@ -1,38 +1,38 @@
-# QC-Agent — Phase 1 Design: Document Ingestion & SDLC Knowledge Base Structure
+# QC-Agent — Phase 1 Design: Guided Document Upload & SDLC Knowledge Base
 
 | Field | Value |
 |---|---|
-| Status | Draft for stakeholder review |
+| Status | Draft v2 for stakeholder review |
 | Date | 2026-10-01 |
 | Author | Connor Pham (TECHVIFY) with Claude |
 | Phase | 1 of 5 — Ingestion & Structure |
-| Supersedes | none |
+| Revision | v2 replaces v1 (same day): user selects document type at upload; AI verifies, versions and normalises; SharePoint and Google Drive storage; customers as users; internet hosting with MFA |
 
 ---
 
 ## 1. Purpose and Context
 
-### 1.1 Product vision
+### 1.1 Problem
 
-QC-Agent is an internal TECHVIFY **Tester Agent**: a web application that helps QA/test engineers work on customer projects by reading the project's documentation and, in later phases, answering questions, generating test plans and test cases, reviewing document quality, analysing test results, and running automation tests.
+Project documents at TECHVIFY are scattered across e-mail, chat, personal drives and customer portals. Team members and customers cannot find the current version, and future AI features cannot read them reliably.
 
-Every capability depends on one foundation: the project's documents must be organised in a predictable, machine-readable structure. Phase 1 builds that foundation.
+### 1.2 Product vision
 
-### 1.2 Roadmap (agreed 2026-10-01)
+QC-Agent is a web application where end users (TECHVIFY team members and customer users) upload project documents, state what each document is, and the system converts, verifies, versions, normalises and stores it in one standard structure. Everyone with access to the project reads documents in one place; AI features in later phases read the same structure.
+
+### 1.3 Roadmap
 
 | Phase | Name | Outcome | Status |
 |---|---|---|---|
-| 1 | Ingestion & Structure | Upload project data; convert; classify into the 6-folder SDLC structure; stubs + gap report | **This spec** |
-| 2 | Knowledge Base & Q&A | Index the structured workspace; answer questions with citations. Decide RAG vs long-context here, based on real data size | Not started |
-| 3 | Test Artefact Generation & Review | Test plan / test cases from requirements and design; requirement-to-test traceability; detect gaps and contradictions | Not started |
-| 4 | Test Result Analysis | Read test reports, logs, bug exports; summarise and classify | Not started |
-| 5 | Automation Test Execution | Generate and run automation scripts in a sandbox with human approval | Not started |
+| 1 | Ingestion & Structure | Guided upload; AI verification; versioning; template normalisation; storage in SharePoint or Google Drive; team and customer access | **This spec** |
+| 2 | Knowledge Base & Q&A | Index the structured documents; answer questions with citations (decide RAG vs long-context from real data size) | Not started |
+| 3 | Test Artefact Generation & Review | Test plan / test cases; traceability; gaps and contradictions | Not started |
+| 4 | Test Result Analysis | Reports, logs, bug exports | Not started |
+| 5 | Automation Test Execution | Generate and run automation scripts in a sandbox | Not started |
 
-Live connectors to Jira / Confluence / Google Docs APIs are a separate work item; Phase 1 accepts exported files only.
+Live Jira / Confluence / Google Docs import connectors remain a separate work item.
 
-### 1.3 Phase 1 goal
-
-When a user provides project data (files, pasted notes, a source-repository reference), the system produces a per-project workspace that follows the standard 6-folder structure below, with every document placed in the right folder under a canonical name, stub templates for missing document types, and a gap report. A human approves the classification before any file is placed.
+### 1.4 The standard structure
 
 | # | Folder | Stage | Document types |
 |---|---|---|---|
@@ -43,66 +43,75 @@ When a user provides project data (files, pasted notes, a source-repository refe
 | 5 | `05-testing` | Verify | Test Plan, Test Cases, Test Reports |
 | 6 | `06-deployment` | Run | Deploy Guide, Runbook, Release Notes |
 
-This structure is an SDLC documentation set ordered Why → What → How → Build → Verify → Run. It has no single official name; the closest standards are ISO/IEC/IEEE 15289 (life-cycle information items), ISO/IEC/IEEE 29148 (requirements/SRS), IEEE 1016 (design descriptions) and ISO/IEC/IEEE 29119-3 (test documentation).
+This is an SDLC documentation set ordered Why → What → How → Build → Verify → Run. It has no single official name; related standards are ISO/IEC/IEEE 15289 (life-cycle information items), 29148 (requirements), IEEE 1016 (design descriptions) and ISO/IEC/IEEE 29119-3 (test documentation).
 
 ---
 
 ## 2. Scope
 
-### 2.1 In scope (Phase 1)
+### 2.1 In scope
 
-- Multi-user web application with local accounts and per-project roles.
-- Project creation; configurable workspace root (default inside the repo, git-ignored).
-- Upload of `docx`, `pdf`, `xlsx`, `pptx`, `md`, `txt`, `html`, `csv`, and `zip` (Confluence / Jira exports); pasted text notes; source-repository reference (server path or git URL).
-- Deterministic conversion to Markdown; duplicate detection by SHA-256.
-- Classification proposals produced by a Claude Agent SDK session that can only read converted documents and submit proposals through custom tools; filename heuristics as fallback.
-- Human review and approval UI; deterministic, idempotent apply step.
-- Stub templates for missing document types; gap report (Markdown + JSON); `project.yaml`; `04-source/repo-structure.md` generated from the repository reference (tree + language statistics, no code analysis).
-- Job progress over Server-Sent Events; cost and token telemetry per agent run; audit log.
-- Docker Compose deployment with HTTPS reverse proxy; runbook.
+- Web application for internal users and customer users; local accounts with mandatory TOTP MFA; internet-facing behind HTTPS.
+- Projects bound to one storage connection: **SharePoint / OneDrive** (Microsoft Graph) or **Google Drive** (Drive API); local filesystem backend for development and tests.
+- Upload of `docx`, `pdf`, `xlsx`, `pptx`, `md`, `txt`, `html`, `csv`, `zip` (Confluence / Jira exports) and pasted notes; the uploader **selects the document type** for every file.
+- Deterministic conversion to Markdown with metadata.
+- AI verification of the selected type; mismatch explained to the uploader, who keeps or changes it.
+- Version detection and version history ("new version of X").
+- AI normalisation into the document type's template as a draft; the uploader approves, edits or discards it.
+- Per-document visibility: internal or shared with customer.
+- Stubs for missing required types, gap report (internal users only), repository-structure document from a repository reference.
+- Progress over Server-Sent Events, cost telemetry, audit log, Docker Compose deployment on a cloud VM.
 
-### 2.2 Out of scope (Phase 1)
+### 2.2 Out of scope
 
-RAG indexing and Q&A; test plan / test case generation; document content review; live Jira / Confluence / Google Docs connectors; OCR for scanned PDFs; AI-drafted document content (stubs are templates only); SSO; e-mail notifications; mobile layout; automated test execution; multi-tenant isolation beyond project membership.
+RAG / Q&A; test artefact generation; content quality review; live import connectors; OCR; SSO; synchronising permissions to SharePoint / Drive; customers opening SharePoint / Drive directly; e-mail notifications; mobile layout; automation test execution.
 
 ---
 
 ## 3. Decision Log
 
-Decisions taken with the stakeholder on 2026-10-01, separated as required by TECHVIFY practice.
-
-### 3.1 Stakeholder decisions (confirmed)
+### 3.1 Stakeholder decisions (confirmed 2026-10-01)
 
 | Topic | Decision |
 |---|---|
-| First deliverable | Phase 1 only; later phases designed not to be blocked |
-| Form factor | Python backend with web UI from the start |
+| First deliverable | Phase 1 only |
+| Form factor | Python backend + web UI from the start |
 | Agent runtime | Claude Agent SDK (Python) |
 | Backend / frontend | FastAPI + Next.js (TypeScript) |
 | Database | PostgreSQL 16 in Docker |
-| Users | Internal TECHVIFY team; login required; local accounts (e-mail + password) |
-| Document language | English for folder names, file names, generated documents and UI |
-| Missing documents | Create stub templates + gap report; no AI-written content in Phase 1 |
-| Workspace location | Configurable path; default `./workspace/<project-slug>/`, git-ignored |
+| Users | TECHVIFY team **and** customer users |
+| Accounts | Local accounts (e-mail + password) |
+| Document language | English for folder/file names, generated content and UI |
+| Document type at upload | **Selected by the uploader**; AI uses it as the primary signal |
+| Type mismatch | AI warns and explains; the **uploader** confirms (keep or change) |
+| AI processing | Markdown + metadata; version management; normalisation into the type's template |
+| Normalised draft approval | **The uploader** approves, edits or discards |
+| Customer visibility | Per document; default internal; documents uploaded by a customer are shared automatically |
+| Storage | **Both SharePoint/OneDrive and Google Drive**, selectable by setting per project |
+| Direct storage access | Team only; customers use the web app |
+| Hosting | Internet-facing cloud server with HTTPS |
+| Missing documents | Stubs + gap report; no AI-written content beyond normalisation of uploaded documents |
 | Source code input | Store reference and generate directory tree only |
-| External LLM API | Claude API (Anthropic) is permitted; customer confirmation required per project before real data is ingested |
-| Core approach | **Option A**: deterministic pipeline; agent used only for judgment (classification) via custom tools; human approval before apply |
-| CI platform | Not decided; recorded as an item requiring confirmation |
+| External LLM API | Claude API permitted; customer confirmation recorded per project |
+| Core approach | Deterministic pipeline; agent used only for judgment and drafting via custom tools; no agent file writes |
+| MFA | Mandatory TOTP for every account (proposed by TECHVIFY, accepted) |
+| CI platform | Not decided |
 
-### 3.2 TECHVIFY assumptions (to be corrected if wrong)
+### 3.2 TECHVIFY assumptions
 
-- One deployment serves the whole team; projects are isolated by membership, not by tenant.
-- Document sets per project are small to medium (tens to low hundreds of files).
-- The server has outbound HTTPS access to `api.anthropic.com`.
-- Vietnamese-language documents are common; conversion and classification must be language-agnostic.
-- The team is comfortable operating Docker Compose on an internal Linux VM.
+- One deployment serves all projects; isolation by project membership.
+- Tens to low hundreds of documents per project; individual documents up to ~200 pages.
+- IT can register an Entra ID application and create a Google Cloud service account.
+- Team members already have, or IT grants manually, access to each project's SharePoint site / Shared Drive.
+- Vietnamese documents are common; processing must be language-agnostic while output is English.
 
 ### 3.3 TECHVIFY recommendations adopted
 
-- Use AI only where judgment is needed (classification); keep every filesystem effect deterministic and testable.
-- Define the folder standard as data (`taxonomy.yaml`) so the standard can change without code changes.
-- Cap agent spend and turns per job; record cost per run.
-- Pin the Agent SDK version and isolate it behind an interface; run a spike first because concurrency behaviour is not documented.
+- AI only for judgment and drafting; every storage write is deterministic backend code.
+- The original file is always the source of truth; normalised versions are labelled as AI-generated and approved.
+- Taxonomy and templates are data, not code.
+- A storage interface with contract tests shared by all adapters.
+- Pin the Agent SDK; spike concurrency and isolation first.
 
 ---
 
@@ -111,34 +120,34 @@ Decisions taken with the stakeholder on 2026-10-01, separated as required by TEC
 ### 4.1 Components
 
 ```
-┌──────────────┐  HTTPS  ┌──────────┐   /api/*    ┌──────────────────────────────┐
-│  Browser     │────────▶│  Caddy   │────────────▶│  Backend (FastAPI, Python)   │
-│  Next.js app │         │  (TLS,   │   /*        │  ├─ api/        REST + SSE   │
-└──────────────┘         │  proxy)  │──┐          │  ├─ ingestion/  deterministic│
-                         └──────────┘  │          │  ├─ agent/      SDK runner   │
-                                       ▼          │  └─ workers/    job queue    │
-                                ┌────────────┐    └───────┬──────────────┬───────┘
-                                │ Frontend   │            │              │
-                                │ (Next.js)  │            ▼              ▼
-                                └────────────┘    ┌────────────┐  ┌──────────────┐
-                                                  │ PostgreSQL │  │ Workspace    │
-                                                  │ 16         │  │ volume       │
-                                                  └────────────┘  └──────────────┘
-                                                                        │
-                                            Claude Agent SDK subprocess │ reads job staging only
-                                            ───────────────────────────▶│ (converted markdown)
-                                            calls api.anthropic.com
+ Internet
+    │ HTTPS
+ ┌──▼─────┐  /api/*  ┌───────────────────────────────────────────┐
+ │ Caddy  │─────────▶│ Backend (FastAPI, Python 3.12)            │
+ │ TLS    │  /*      │  api/        REST + SSE                   │
+ └──┬─────┘          │  ingestion/  convert, version, publish    │
+    ▼                │  agent/      Agent SDK runner + tools     │
+ ┌────────┐          │  storage/    StorageBackend adapters ─────┼──▶ SharePoint (Graph API)
+ │Frontend│          │  workers/    per-item job runner          │──▶ Google Drive (Drive API)
+ │Next.js │          └───────┬────────────────────┬──────────────┘──▶ Local FS (dev/test)
+ └────────┘                  ▼                    ▼
+                      ┌────────────┐      ┌────────────────┐
+                      │ PostgreSQL │      │ Staging volume │  (uploads, converted md,
+                      └────────────┘      └────────────────┘   agent session dirs)
+                                                  ▲
+                         Claude Agent SDK ────────┘ reads staging only; calls api.anthropic.com
 ```
 
 | Component | Responsibility |
 |---|---|
-| **Frontend (Next.js, TypeScript)** | Login, project list, project detail (tree, gap report, history, members/settings), new ingestion, review, job result, user admin. Consumes REST + SSE. |
-| **Backend (FastAPI, Python 3.12)** | Authentication, authorisation, projects, jobs, review, SSE; owns every filesystem write. |
-| **Ingestion pipeline** (`backend/app/ingestion/`) | Converters, heuristics, scaffolding, stubs, gap report, apply, repo tree. Pure Python, no LLM. |
-| **Agent runner** (`backend/app/agent/`) | One Claude Agent SDK session per job, custom tools only, strict limits. Behind an `Analyzer` interface. |
-| **Workers** (`backend/app/workers/`) | In-process async job runner with a semaphore for agent sessions; job state persisted in PostgreSQL; designed to be moved to a separate process later without API changes. |
-| **PostgreSQL 16** | Users, sessions, projects, members, jobs, source files, proposals, agent runs, documents index, audit log. |
-| **Workspace volume** | Knowledge base root; one directory per project. |
+| Frontend (Next.js) | Login + MFA, projects, document browser, upload wizard, confirmation and draft review, gap report, settings, admin |
+| Backend (FastAPI) | Auth, authorisation, projects, uploads, SSE; the only component that writes to storage |
+| Ingestion | Converters, version matching, stub and gap report generation, publish |
+| Agent runner | Claude Agent SDK sessions with custom tools only (verification and normalisation) |
+| Storage | `StorageBackend` interface; SharePoint, Google Drive and local adapters |
+| Workers | In-process async runner, per-item state in PostgreSQL, semaphore for agent sessions |
+| PostgreSQL | Users, MFA, sessions, connections, projects, members, uploads, items, documents, versions, drafts, agent runs, audit |
+| Staging volume | Temporary files per upload; cleaned after retention period |
 
 ### 4.2 Repository layout
 
@@ -146,47 +155,41 @@ Decisions taken with the stakeholder on 2026-10-01, separated as required by TEC
 QC-Agent/
 ├── backend/
 │   ├── app/
-│   │   ├── api/           # routers: auth, users, projects, documents, jobs, review, taxonomy, health
-│   │   ├── core/          # settings (pydantic-settings), security, logging, errors
-│   │   ├── db/            # SQLAlchemy 2.x models, session, Alembic migrations
-│   │   ├── ingestion/     # converters/, heuristics.py, scaffold.py, stubs.py, gaps.py, apply.py, repo_tree.py, paths.py
-│   │   ├── agent/         # analyzer.py (interface), sdk_analyzer.py, tools.py, prompts.py, fake_analyzer.py
-│   │   ├── workers/       # queue.py, job_runner.py, events.py (SSE bus)
-│   │   └── schemas/       # Pydantic request/response models
-│   ├── tests/             # unit, api, integration (opt-in)
-│   ├── alembic.ini
-│   └── pyproject.toml     # managed with uv; Python 3.12 pinned
-├── frontend/              # Next.js app router, TypeScript, generated API client
+│   │   ├── api/         # auth, mfa, users, connections, projects, documents, uploads, review, taxonomy, health
+│   │   ├── core/        # settings, security, crypto (secret encryption), logging
+│   │   ├── db/          # SQLAlchemy models, Alembic
+│   │   ├── ingestion/   # converters/, versioning.py, publish.py, stubs.py, gaps.py, repo_tree.py, naming.py
+│   │   ├── agent/       # analyzer.py, sdk_runner.py, tools.py, prompts.py, fake.py
+│   │   ├── storage/     # base.py, sharepoint.py, gdrive.py, localfs.py
+│   │   ├── workers/     # runner.py, events.py
+│   │   └── schemas/
+│   ├── tests/           # unit, storage contract, api, opt-in live tests
+│   └── pyproject.toml   # uv, Python 3.12
+├── frontend/
 ├── templates/
-│   ├── taxonomy.yaml      # the 6-folder standard (data, not code)
-│   ├── heuristics.yaml    # filename/heading rules for fallback classification
-│   └── stubs/             # one Markdown template per doc type
-├── workspace/             # default knowledge-base root (git-ignored)
+│   ├── taxonomy.yaml
+│   └── doc-templates/   # one Markdown template per doc type (stubs + normalisation)
+├── deploy/              # docker-compose.yml, Caddyfile
 ├── docs/
-│   └── superpowers/specs/ # this document and future specs/plans
-├── deploy/
-│   ├── Caddyfile
-│   └── docker-compose.yml
 ├── .env.example
-├── .gitignore
 └── README.md
 ```
-
-### 4.3 Runtime topology
-
-- **Development**: backend via `uv run`, frontend via `pnpm dev`, PostgreSQL via `docker compose up db`.
-- **Team server**: `docker compose up` brings up `db`, `backend`, `frontend`, `caddy`. Secrets in `.env` on the server only.
 
 ---
 
 ## 5. Knowledge Base Standard
 
-### 5.1 Per-project workspace layout
+### 5.1 Layout in the storage backend
+
+Each project has a root location chosen at project creation (a SharePoint document library folder, or a Google Shared Drive folder):
 
 ```
-<WORKSPACE_ROOT>/<project-slug>/
+<project root>/
 ├── project.yaml
 ├── 01-overview/
+│   ├── srs--customer-portal.docx            # original (latest version; older versions in native history)
+│   ├── srs--customer-portal.md              # converted Markdown
+│   └── srs--customer-portal.normalized.md   # approved AI-normalised version (optional)
 ├── 02-requirements/
 ├── 03-design/
 ├── 04-source/
@@ -194,19 +197,14 @@ QC-Agent/
 ├── 05-testing/
 │   └── test-reports/
 ├── 06-deployment/
-├── _sources/            # original uploaded files, named <sha256>.<ext>, never modified
-├── _reports/            # gap-report.md, gap-report.json, ingestion-log.md
-└── _jobs/               # staging per job (deleted after STAGING_RETENTION_DAYS)
-    └── <job-id>/
-        ├── raw/         # uploaded files as received
-        ├── converted/   # <source-file-id>.md
-        ├── manifest.json
-        └── .claude/     # Agent SDK config/session dir for this job (CLAUDE_CONFIG_DIR)
+└── _reports/
+    ├── gap-report.md
+    └── gap-report.json
 ```
 
-### 5.2 `templates/taxonomy.yaml`
+(The example file sits in `02-requirements` in practice; shown under `01-overview` only to illustrate the trio.)
 
-The standard is data. The loader validates the file at startup and exposes it through `GET /api/v1/taxonomy`.
+### 5.2 Taxonomy (`templates/taxonomy.yaml`)
 
 ```yaml
 version: 1
@@ -214,501 +212,456 @@ folders:
   - id: overview
     dir: 01-overview
     stage: Why
-    description: Why the project exists, who is involved, shared vocabulary.
     doc_types:
-      - { id: readme,          title: Project README,     required: true,  template: readme.md }
-      - { id: project-charter, title: Project Charter,    required: true,  template: project-charter.md }
-      - { id: glossary,        title: Glossary,           required: false, template: glossary.md }
+      - { id: readme,          title: Project README,  required: true,  template: readme.md }
+      - { id: project-charter, title: Project Charter, required: true,  template: project-charter.md }
+      - { id: glossary,        title: Glossary,        required: false, template: glossary.md }
   - id: requirements
     dir: 02-requirements
     stage: What
-    description: What the system must do, from business and system perspectives.
     doc_types:
-      - { id: brd,          title: Business Requirements Document, required: true,  template: brd.md }
-      - { id: srs,          title: Software Requirements Specification, required: true, template: srs.md }
+      - { id: brd,          title: Business Requirements Document,      required: true,  template: brd.md }
+      - { id: srs,          title: Software Requirements Specification, required: true,  template: srs.md }
       - { id: use-cases,    title: Use Cases,    required: false, template: use-cases.md }
       - { id: user-stories, title: User Stories, required: false, template: user-stories.md }
   - id: design
     dir: 03-design
     stage: How
-    description: How the system is built: architecture, data, flows, interfaces.
     doc_types:
       - { id: architecture-c4, title: Architecture (C4), required: true,  template: architecture-c4.md }
       - { id: erd,             title: Entity Relationship Diagram, required: false, template: erd.md }
       - { id: workflows,       title: Workflows, required: false, template: workflows.md }
-      - { id: api-spec,        title: API Specification, required: false, template: api-spec.md, keep_original: true }
+      - { id: api-spec,        title: API Specification, required: false, template: api-spec.md, normalize: false }
   - id: source
     dir: 04-source
     stage: Build
-    description: Source code organisation, conventions, architecture decisions.
     doc_types:
-      - { id: repo-structure,     title: Repository Structure, required: true,  template: repo-structure.md }
+      - { id: repo-structure,     title: Repository Structure, required: true,  template: repo-structure.md, normalize: false }
       - { id: coding-conventions, title: Coding Conventions,   required: false, template: coding-conventions.md }
       - { id: adr,                title: Architecture Decision Record, required: false, template: adr.md, multi: true, subdir: adr }
   - id: testing
     dir: 05-testing
     stage: Verify
-    description: How the system is verified.
     doc_types:
       - { id: test-plan,   title: Test Plan,   required: true,  template: test-plan.md }
-      - { id: test-cases,  title: Test Cases,  required: true,  template: test-cases.md }
+      - { id: test-cases,  title: Test Cases,  required: true,  template: test-cases.md, normalize: false }
       - { id: test-report, title: Test Report, required: false, template: test-report.md, multi: true, subdir: test-reports }
   - id: deployment
     dir: 06-deployment
     stage: Run
-    description: How the system is deployed and operated.
     doc_types:
       - { id: deploy-guide,  title: Deployment Guide, required: true,  template: deploy-guide.md }
       - { id: runbook,       title: Runbook,          required: true,  template: runbook.md }
       - { id: release-notes, title: Release Notes,    required: false, template: release-notes.md }
 ```
 
-Rules:
+Rules: every folder accepts `other`; `multi` types live in `subdir`; `normalize: false` types (machine formats such as OpenAPI files, large test-case spreadsheets, generated repo structure) skip normalisation; `required` drives stubs and completeness.
 
-- Every folder implicitly accepts the doc type `other` for documents that belong to the stage but match no standard type.
-- `multi: true` types live in `subdir` and never get a single stub; the gap report counts them as present when at least one file exists.
-- `keep_original: true` types also copy the original file (for example `openapi.yaml`) next to the Markdown description.
-- `required` drives the completeness percentage; optional types are listed separately in the gap report.
+### 5.3 Naming and metadata
 
-### 5.3 File naming and frontmatter
-
-| Case | Path |
+| Item | Name |
 |---|---|
-| Stub for a missing type | `<dir>/<doc-type>.md` |
-| Ingested document | `<dir>/<doc-type>--<original-name-slug>.md` |
-| Ingested `multi` type | `<dir>/<subdir>/<doc-type>--<original-name-slug>.md` |
-| Ingested `other` | `<dir>/other--<original-name-slug>.md` |
-| Original file | `_sources/<sha256>.<ext>` |
+| Original | `<doc-type>--<title-slug>.<ext>` |
+| Converted | `<doc-type>--<title-slug>.md` |
+| Normalised | `<doc-type>--<title-slug>.normalized.md` |
+| Stub (missing required type) | `<doc-type>.md` |
 
-Slug rules: lowercase ASCII letters, digits and hyphens; Vietnamese diacritics transliterated; maximum 80 characters; collision resolved with a numeric suffix.
+Slug: lowercase ASCII, digits, hyphens; Vietnamese diacritics transliterated; ≤ 80 chars; collisions get a numeric suffix. The title defaults to the file name and is editable in the upload wizard.
 
-Every Markdown file written by the system starts with YAML frontmatter:
+Converted and normalised Markdown start with frontmatter:
 
 ```yaml
 ---
-qc_agent: 1
+qc_agent: 2
+document_id: "01J9…"
+version: 3
 doc_type: srs
 folder: 02-requirements
-title: "Software Requirements Specification v2.1"
-stub: false
-source_name: "SRS_v2.1_final.docx"
+title: "Customer Portal SRS"
+kind: converted              # converted | normalized | stub
+source_file: "srs--customer-portal-srs.docx"
 source_sha256: "3f1c…"
-source_path: "_sources/3f1c….docx"
-converter: "markitdown/docx"
-language: "vi"
-classified_by: "agent"          # agent | heuristic | user
-confidence: 0.92
-reviewed_by: "Connor Pham"       # display name, never e-mail
-reviewed_at: "2026-10-01T09:30:00+07:00"
-job_id: "01J9…"
+uploaded_by: "Nguyen Van A"   # display name only
+uploaded_at: "2026-10-01T09:30:00+07:00"
+type_selected_by_user: srs
+type_check: match             # match | mismatch_kept | mismatch_changed | skipped
+language: vi
+visibility: internal          # internal | shared
+normalized_approved_by: null  # set on normalized files
 ---
 ```
 
-Stubs carry `stub: true`, `classified_by: "system"`, and a body made of the template's section headings with `> To be completed.` markers. The SHA-256 of a stub at creation time is stored in the `documents` table; a stub is only auto-removed if its current hash still equals that value (the user has not edited it).
+Normalised files additionally carry a banner line after the frontmatter: `> AI-normalised from <source file> v<version>, approved by <name> on <date>. The original file is authoritative.`
 
-### 5.4 `project.yaml`
+### 5.4 Versioning
 
-```yaml
-name: "Customer Portal"
-slug: customer-portal
-client: "ACME Corp"            # optional
-created_at: "2026-10-01T09:00:00+07:00"
-taxonomy_version: 1
-language: "en"
-summary: ""                    # optional, agent-proposed, user-confirmed
-source_repos:
-  - ref: "https://git.example.com/acme/portal.git"
-    recorded_at: "2026-10-01T09:40:00+07:00"
-```
+- A **document** is a logical item (doc type + title) within a project; it has one or more **versions**.
+- At upload, the uploader chooses *new document* or *new version of an existing document*. The system pre-selects a suggestion when an existing document has the same doc type and a similar title (normalised slug similarity ≥ 0.8) or the agent reports a strong content match.
+- A new version overwrites the same paths in storage, so SharePoint and Google Drive keep native version history; the backend records the storage version id for each file in `document_versions`.
+- An identical SHA-256 to the current version is rejected as "no change".
+- The normalised draft belongs to a specific version; a new version invalidates the previous normalised file only after its own draft is approved (until then the previous normalised file stays, marked "based on v(n-1)").
 
-### 5.5 Gap report
+### 5.5 Stubs and gap report
 
-`_reports/gap-report.md` (human) and `_reports/gap-report.json` (machine) are regenerated on every apply.
+Stubs are created in storage for missing **required** types only, from `templates/doc-templates/`, with `kind: stub`. A stub is removed when a real document of that type is published, provided the stub's content hash is unchanged. The gap report (Markdown + JSON in `_reports/`, and in the web app) lists, per folder, each type as `present`, `stub` or `missing` with completeness of required types. Visible to internal roles only.
 
-```json
-{
-  "generated_at": "2026-10-01T09:45:00+07:00",
-  "job_id": "01J9…",
-  "completeness_required": 0.6,
-  "folders": [
-    {
-      "id": "requirements", "dir": "02-requirements",
-      "required_total": 2, "required_present": 1,
-      "doc_types": [
-        { "id": "brd", "required": true,  "status": "present", "files": ["brd--acme-brd-v1.md"] },
-        { "id": "srs", "required": true,  "status": "stub",    "files": ["srs.md"] },
-        { "id": "use-cases", "required": false, "status": "missing", "files": [] }
-      ]
-    }
-  ]
-}
-```
+### 5.6 Repository structure
 
-Status values: `present` (≥1 non-stub file), `stub` (only the stub exists), `missing` (nothing). Optional types are never `stub` unless a user asked for one; Phase 1 creates stubs for **required** types only, to keep the workspace uncluttered.
-
-### 5.6 `04-source/repo-structure.md`
-
-Generated when a repository reference is given: the reference, generation time, a directory tree to a configurable depth (default 4) honouring `.gitignore`-style ignore rules (`node_modules`, `.git`, `dist`, `build`, `venv`, binaries), file counts and percentage by language inferred from extensions, and the top-level files list. For a git URL the system does a shallow clone into the job staging area, generates the document, and deletes the clone. No file contents are copied into the workspace.
+Uploaders may add a repository reference (git URL or server path). The backend shallow-clones into staging, writes `04-source/repo-structure.md` (tree to depth 4 honouring standard ignores, language statistics), and deletes the clone.
 
 ---
 
-## 6. Ingestion Job Lifecycle
+## 6. Upload Flow
 
-### 6.1 States
+### 6.1 Upload wizard (end-user view)
+
+1. Choose project (only projects where the user may upload).
+2. Drop files. For each file choose **document type** from a dropdown grouped by the six folders (search supported), edit the title, choose *new document* or *new version of …* (suggestion pre-selected), and for internal users choose visibility (default internal; customer uploads are forced to shared).
+3. "Apply to all" sets type / visibility for a selection.
+4. Submit. The user sees per-file progress live and can leave the page; pending actions appear in a "My tasks" list.
+
+### 6.2 Per-item states
 
 ```
-created ─▶ converting ─▶ analyzing ─▶ awaiting_review ─▶ applying ─▶ completed
-   │            │            │               │               │
-   └────────────┴────────────┴───────────────┴───────────────┴──▶ failed
-                                             └──▶ cancelled (user action before apply)
+uploaded → converting → checking ─┬─ match ─────────────────────┐
+                                  └─ mismatch → needs_confirmation → (keep | change)
+                                                                   ▼
+                                                              publishing → published
+                                                                   │
+                                     normalize enabled for type? ──┤ no → done
+                                                                   ▼ yes
+                                                    normalizing → draft_ready → (approve | edit+approve | discard)
+                                                                                    ▼
+                                                                      normalized_published → done
+   any step ──▶ failed (with reason, retry button)
 ```
 
-Transitions are persisted in `ingestion_jobs.status`; every transition appends an `audit_log` row and emits an SSE event.
+### 6.3 Steps
 
-### 6.2 Step 1 — Create
+1. **Upload**: validation (extensions, `MAX_UPLOAD_FILE_MB` default 50, `MAX_UPLOAD_BATCH_MB` default 500, zip safety: path-traversal rejection, entry and size limits, no nested zips). Zip entries become individual items; the selected type applies to all entries and can be changed per entry. SHA-256 computed.
+2. **Convert** (deterministic): `markitdown` for docx/pptx/xlsx/html/pdf, `pymupdf` fallback for pdf, built-in for csv/md/txt. Record pages, characters, heading outline, language. Low text per page → `low_text` warning (likely scanned; no OCR).
+3. **Check** (agent): verify the selected type against content; return `match` or `mismatch` with explanation and suggested type; return version-match hints. Low-text items skip the check (`type_check: skipped`).
+4. **Confirm** (uploader, only on mismatch): the uploader sees the explanation and chooses keep or change. Nothing else blocks.
+5. **Publish** (deterministic): write original and converted Markdown to storage under the target folder, record storage item and version ids, update `documents` / `document_versions`, remove stub if applicable, regenerate gap report, update `project.yaml`. Team members can read the document from this moment.
+6. **Normalise** (agent, only for types with `normalize` true): draft the document in the type's template structure, section by section, using only source content. Missing sections are written as `> Not found in source.` Each section lists the source headings / line ranges it was drawn from.
+7. **Approve** (uploader): side-by-side view of converted source and draft; the uploader approves, edits the draft in a Markdown editor then approves, or discards. On approval the normalised file is written to storage.
 
-- Input: project (existing or new), 1..N files, optional pasted notes (saved as `notes-<n>.md`), optional repository reference.
-- Validation: allowed extensions; per-file size ≤ `MAX_UPLOAD_FILE_MB` (default 50); per-job total ≤ `MAX_UPLOAD_JOB_MB` (default 500); file names sanitised; symlinks rejected.
-- Zip handling: extract into `raw/` with path-traversal protection (reject entries resolving outside the target), entry-count and total-size limits, nested zips not extracted. Confluence HTML exports and Jira CSV exports are the intended use.
-- Each file receives a `source_files` row with SHA-256. A hash already present in the project's `documents` table marks the file `duplicate_of` and skips conversion; the user sees it in review and may force re-import.
+### 6.4 Concurrency and idempotency
 
-### 6.3 Step 2 — Convert
-
-| Input | Converter | Notes |
-|---|---|---|
-| `docx`, `pptx`, `xlsx`, `html` | `markitdown` | Primary converter; tables become Markdown tables; sheets are capped at 500 rows each with a truncation note |
-| `pdf` | `markitdown`, fallback `pymupdf` | If extracted text < 200 characters per page on average, mark `low_text` (likely scanned; OCR out of scope) |
-| `csv` | built-in | Markdown table, 500-row cap with note |
-| `md`, `txt` | pass-through | UTF-8 normalisation, LF line endings |
-| images inside documents | dropped from Markdown | originals retained in `_sources`; recorded as a known limitation |
-
-Each conversion records: page count (if available), character count, heading outline (first 30 headings), detected language (`langdetect`), converter id and version. Failures set `conversion_status = failed` with the error message; the job continues.
-
-All converters implement one interface:
-
-```python
-class Converter(Protocol):
-    extensions: frozenset[str]
-    def convert(self, src: Path) -> ConversionResult  # markdown, meta, warnings
-```
-
-### 6.4 Step 3 — Analyse
-
-Two sources of proposals are produced for every successfully converted file:
-
-1. **Heuristic proposals** (always): rules from `templates/heuristics.yaml` matched against the file name and the first headings. Confidence 0.5 when a rule matches, otherwise `folder = null`, `doc_type = unclassified`, confidence 0.
-2. **Agent proposals** (normal path): one Claude Agent SDK session per job (section 7). The agent's `propose_classification` tool upserts rows in `classification_proposals` with `proposed_by = agent`.
-
-If the agent run ends without a proposal for some files, those files keep their heuristic proposal and the job is flagged `agent_incomplete` with the reason (budget, turns, timeout, API error). The job still moves to `awaiting_review`.
-
-### 6.5 Step 4 — Review (human gate)
-
-The review screen lists one row per source file with the agent proposal (or heuristic fallback), confidence, summary and reasoning. The reviewer may:
-
-- change folder and/or doc type (dropdowns from the taxonomy, including `other`);
-- edit the title;
-- reject the file (not imported; original is still kept in `_jobs/<job>/raw` until cleanup);
-- force import of a detected duplicate;
-- accept all proposals with confidence ≥ project threshold (default 0.8) in one click;
-- confirm or edit the agent's proposed project summary.
-
-A file whose current proposal is `unclassified` (heuristic fallback with no match) cannot be accepted until the reviewer selects a folder and doc type; Apply is disabled while any accepted row is incomplete.
-
-Nothing is written to the workspace until the reviewer clicks **Apply** and confirms a dialog listing the exact changes (files to create, stubs to add/remove, originals to copy).
-
-### 6.6 Step 5 — Apply (deterministic, idempotent)
-
-Executed under a per-project advisory lock (PostgreSQL `pg_advisory_xact_lock(project_id)`):
-
-1. Ensure the 6 folders and sub-directories exist; create `project.yaml` if missing.
-2. For each accepted file: copy original to `_sources/<sha256>.<ext>` (skip if present); write Markdown with frontmatter to the target path (write to a temp file, then atomic rename); for `keep_original` types also copy the original next to it.
-3. For each required doc type that now has a non-stub file: delete the stub if its hash is unchanged since creation.
-4. For each required doc type with no file: render the stub from `templates/stubs/`, record its hash.
-5. If a repository reference exists: generate `04-source/repo-structure.md`.
-6. Regenerate `_reports/gap-report.md` and `.json`; append to `_reports/ingestion-log.md`; update `project.yaml`.
-7. Rebuild the `documents` index rows for the project from the filesystem.
-
-Idempotency: target paths derive only from (doc type, original name slug); writes are skipped when the target exists with identical content hash; stub creation/removal is hash-guarded. Re-running apply for the same approved job produces no changes.
-
-### 6.7 Step 6 — Complete and clean up
-
-The job result shows counts (imported, rejected, failed, duplicates), agent cost, and links to the tree and gap report. A nightly task deletes `_jobs/<job-id>/` directories older than `STAGING_RETENTION_DAYS` (default 7), including the SDK session directory.
+Publishing for a project runs under a PostgreSQL advisory lock per project. Each storage write is keyed by (document id, version, kind); retries detect the existing version by SHA-256 and do not create duplicate versions.
 
 ---
 
-## 7. Agent Runner Design
+## 7. Agent Design
 
 ### 7.1 Interface
 
 ```python
 class Analyzer(Protocol):
-    async def analyze(self, ctx: JobContext, emit: Callable[[AgentEvent], Awaitable[None]]) -> AnalysisResult
-
-class ClaudeAgentSdkAnalyzer(Analyzer): ...   # production
-class FakeAnalyzer(Analyzer): ...             # tests: scripted proposals
+    async def check(self, batch: CheckBatch, emit: EventSink) -> CheckResult
+    async def normalize(self, item: NormalizeInput, emit: EventSink) -> NormalizeResult
 ```
 
-`AnalysisResult` carries `session_id`, `status` (`success | budget_exceeded | max_turns | timeout | error`), `total_cost_usd`, `input_tokens`, `output_tokens`, `num_turns`, `error`.
+Production implementation uses the Claude Agent SDK; tests use a scripted fake.
 
-### 7.2 SDK configuration (verified field names, Agent SDK Python 0.2.x)
+### 7.2 Sessions
+
+- **Check session**: one per upload batch (many items), short.
+- **Normalise session**: one per item, longer; runs only after publish so it never delays team access.
+
+### 7.3 SDK configuration (common)
 
 ```python
 options = ClaudeAgentOptions(
-    cwd=str(job_dir),                               # staging dir: converted markdown + manifest only
-    system_prompt=build_system_prompt(taxonomy),
-    model=project.settings.model,                   # default "claude-opus-5"
-    mcp_servers={"qc": create_sdk_mcp_server(name="qc", version="1.0.0", tools=[...])},
-    allowed_tools=[
-        "mcp__qc__list_documents",
-        "mcp__qc__read_document",
-        "mcp__qc__propose_classification",
-        "mcp__qc__set_project_summary",
-    ],
+    cwd=str(staging_dir),
+    system_prompt=prompt,
+    model=project.settings.model,                 # default "claude-opus-5"
+    mcp_servers={"qc": create_sdk_mcp_server(name="qc", version="1.0.0", tools=tools)},
+    allowed_tools=[f"mcp__qc__{t}" for t in tool_names],
     disallowed_tools=["Bash", "Read", "Write", "Edit", "MultiEdit", "NotebookEdit",
                       "Glob", "Grep", "WebSearch", "WebFetch", "Task", "TodoWrite"],
-    permission_mode="dontAsk",                      # anything not allow-listed is denied, no prompt
-    max_turns=min(10 + 3 * n_docs, 80),
-    max_budget_usd=project.settings.max_budget_usd, # default 3.0
-    setting_sources=[],                             # never load user/project Claude settings
-    env={
-        "ANTHROPIC_API_KEY": settings.anthropic_api_key,
-        "CLAUDE_CONFIG_DIR": str(job_dir / ".claude"),  # keep session transcripts inside staging
-    },
+    permission_mode="dontAsk",
+    max_turns=turn_cap,
+    max_budget_usd=budget,
+    setting_sources=[],
+    env={"ANTHROPIC_API_KEY": settings.anthropic_api_key,
+         "CLAUDE_CONFIG_DIR": str(staging_dir / ".claude")},
 )
 ```
 
-The whole `query()` iteration is wrapped in `asyncio.timeout(AGENT_TIMEOUT_SECONDS)` (default 900). Messages are relayed as SSE events: `AssistantMessage` tool-use blocks become "agent is reading X" / "agent proposed N"; the final `ResultMessage` provides `session_id`, `total_cost_usd`, `usage`, `subtype`.
+Wrapped in `asyncio.timeout(...)`. To verify in the spike: `setting_sources=[]` isolation, `CLAUDE_CONFIG_DIR` relocation, concurrent sessions in one process.
 
-Items marked **verify in spike**: that `setting_sources=[]` prevents loading `~/.claude` settings; that `CLAUDE_CONFIG_DIR` relocates session storage for the SDK subprocess; concurrent sessions in one process.
+### 7.4 Custom tools
 
-### 7.3 Custom tools (in-process MCP server `qc`)
+| Session | Tool | Purpose |
+|---|---|---|
+| Check | `list_items` | id, file name, selected type, title, outline, preview, existing documents of the same project (type + title) for version hints |
+| Check | `read_item` | numbered slice, ≤ 400 lines |
+| Check | `submit_check` | `{item_id, verdict: match|mismatch, suggested_doc_type?, explanation ≤ 400, version_of_document_id?, confidence}`; validated against taxonomy |
+| Normalise | `get_template` | section list of the type's template with guidance per section |
+| Normalise | `read_source` | numbered slice of the converted Markdown |
+| Normalise | `submit_section` | `{section_id, markdown, source_refs[], not_found: bool}`; validated (known section, size limit) |
+| Normalise | `finish_draft` | `{notes ≤ 600}`; fails if any template section is unsubmitted |
 
-| Tool | Input | Output | Side effects |
-|---|---|---|---|
-| `list_documents` | `{}` | JSON list: `doc_id`, `original_name`, `ext`, `pages`, `chars`, `language`, `outline[]`, `preview` (first 600 chars), `heuristic_hint {folder, doc_type, confidence}` | none |
-| `read_document` | `{doc_id, start_line, max_lines ≤ 400}` | numbered text slice + `total_lines` | none |
-| `propose_classification` | `{proposals: [{doc_id, folder_id, doc_type, title, summary ≤ 300, confidence 0..1, reasoning ≤ 500, duplicate_of?, split_note?}]}` | `{accepted, errors[], missing_doc_ids[]}` | upserts `classification_proposals` (last write per `doc_id` wins) |
-| `set_project_summary` | `{summary ≤ 600, detected_language, project_name?, client_name?}` | `{ok}` | stores on the job for the reviewer to confirm |
+No built-in file, shell, web or subagent tools. The backend assembles the draft from submitted sections.
 
-Validation inside `propose_classification`: unknown `doc_id`, unknown folder, doc type not in that folder (and not `other`), confidence out of range → returned as `errors` so the agent corrects itself; nothing invalid is stored. Tool handlers are plain async functions, unit-tested without the SDK.
+### 7.5 Prompt rules (normalise)
 
-### 7.4 System prompt (outline)
+Use only content present in the source; do not invent requirements, numbers, names or decisions; translate to English while preserving identifiers, codes and quoted UI text; keep requirement ids; mark missing sections explicitly; list source references for every section.
 
-Role: documentation analyst for software projects. Provide the taxonomy (folder ids, stage, description, doc types with one-line definitions). Instructions: call `list_documents` first; read as much of each document as needed to decide, using the outline to jump; submit a proposal for **every** document; prefer `other` in the right folder over a wrong doc type; mark duplicates and multi-part documents; summaries and reasoning in English regardless of document language; finish with `set_project_summary`. State explicitly that the agent has no file-writing capability and must not attempt it.
+### 7.6 Limits
 
-### 7.5 Limits and telemetry
-
-Per project settings (editable by owner): `model`, `max_budget_usd`, `confidence_threshold`. Global: `AGENT_TIMEOUT_SECONDS`, `AGENT_CONCURRENCY` (semaphore, default 1 until the spike proves otherwise). Every run writes an `agent_runs` row with session id, model, status, tokens, cost, turns, start/end.
-
-### 7.6 Hooks for later phases
-
-Phases 2–5 reuse the same `Analyzer` interface pattern with different tool sets (search tools for Q&A, writer tools for test artefacts, a sandboxed runner for automation). Session ids are stored so later phases can resume or fork sessions if useful.
+Per-project settings: `model`, `check_budget_usd` (default 1.0 per batch), `normalize_budget_usd` (default 2.0 per item). Global: `AGENT_TIMEOUT_SECONDS` (check 600, normalise 1200), `AGENT_CONCURRENCY` (default 1 until the spike). Agent failures leave the item usable: check failure → `type_check: skipped`, item publishes with the user's type; normalise failure → item stays published without a normalised file, with retry.
 
 ---
 
-## 8. Data Model (PostgreSQL 16)
+## 8. Storage Backends
+
+### 8.1 Interface
+
+```python
+class StorageBackend(Protocol):
+    async def ensure_folder(self, path: str) -> None
+    async def put_file(self, path: str, data: bytes, content_type: str) -> StoredFile   # returns item_id, version_id, web_url
+    async def get_file(self, path: str) -> bytes
+    async def list_versions(self, path: str) -> list[StoredVersion]
+    async def get_version(self, path: str, version_id: str) -> bytes
+    async def move_to_trash(self, path: str) -> None
+    async def health(self) -> HealthStatus
+```
+
+All adapters pass one shared contract test suite (run against local FS always; against real SharePoint / Drive in opt-in live tests).
+
+### 8.2 SharePoint / OneDrive adapter
+
+- Microsoft Graph, app-only (client credentials) via `msal`.
+- Permission: `Sites.Selected`, granted by IT per SharePoint site (least privilege) rather than tenant-wide `Sites.ReadWrite.All`.
+- Project root = site + document library (drive) + folder path. Upload sessions for files > 4 MB. Versions via `driveItem/versions`.
+
+### 8.3 Google Drive adapter
+
+- Drive API v3 with a service account (`google-api-python-client`); the service account is added as Content manager on each Shared Drive.
+- Project root = Shared Drive id + folder path; folder paths resolved to ids and cached. `supportsAllDrives=true` on every call. Resumable uploads; new versions via `files.update` on the existing file id; versions via `revisions` (with `keepForever` on published versions).
+
+### 8.4 Local FS adapter
+
+For development and CI; stores under `LOCAL_STORAGE_ROOT`; versions as `.versions/<path>/<n>`.
+
+### 8.5 Connections
+
+Admins create **storage connections** (type, display name, credentials). Secrets (client secret, service-account JSON) are encrypted at rest with a key from `SECRET_ENCRYPTION_KEY` (Fernet). A project is bound to one connection and one root location at creation; changing it later is out of scope for Phase 1.
+
+### 8.6 Access to storage
+
+Team members open the SharePoint site / Shared Drive directly using permissions IT grants. The system does not change storage permissions. Customers never receive storage access; they read through the web app, which streams files from storage after checking visibility.
+
+---
+
+## 9. Users, Roles and Visibility
+
+| Role | Scope | Can |
+|---|---|---|
+| `admin` | global | manage users, storage connections, all projects |
+| `owner` | project | members, settings, visibility of any document, archive project |
+| `editor` | project | upload, confirm/approve own items, change visibility of internal documents |
+| `viewer` | project | read all documents, gap report |
+| `client` | project | upload (always shared), confirm/approve own items, read **shared** documents only; no gap report, no settings |
+
+Users have `account_type` `internal` or `customer`; customer accounts can only hold the `client` role. Visibility per document: `internal` (default) or `shared`; documents uploaded by a client are `shared` and cannot be made internal by the client.
+
+---
+
+## 10. Data Model (PostgreSQL 16)
 
 | Table | Key columns |
 |---|---|
-| `users` | `id`, `email` (unique, lowercase), `password_hash` (Argon2id), `display_name`, `role` (`admin`/`member`), `must_change_password`, `is_active`, `failed_logins`, `locked_until`, `created_at` |
-| `auth_sessions` | `id`, `user_id`, `token_hash`, `expires_at`, `revoked_at`, `ip`, `user_agent` |
-| `projects` | `id`, `slug` (unique), `name`, `client_name`, `workspace_path`, `settings` jsonb (`model`, `max_budget_usd`, `confidence_threshold`), `created_by`, `created_at`, `archived_at` |
-| `project_members` | `project_id`, `user_id`, `role` (`owner`/`editor`/`viewer`) |
-| `ingestion_jobs` | `id`, `project_id`, `created_by`, `status`, `flags` jsonb (`agent_incomplete`…), `counts` jsonb, `repo_ref`, `proposed_summary`, `error`, `created_at`, `updated_at` |
-| `source_files` | `id`, `job_id`, `project_id`, `original_name`, `ext`, `size_bytes`, `sha256`, `raw_path`, `conversion_status`, `converted_path`, `meta` jsonb (pages, chars, outline, language, warnings), `duplicate_of` |
-| `classification_proposals` | `id`, `job_id`, `source_file_id`, `proposed_by` (`agent`/`heuristic`), `folder_id`, `doc_type`, `title`, `summary`, `confidence`, `reasoning`, `duplicate_of`, `split_note`, `review_status` (`pending`/`accepted`/`modified`/`rejected`), `final_folder_id`, `final_doc_type`, `final_title`, `reviewed_by`, `reviewed_at` |
-| `agent_runs` | `id`, `job_id`, `session_id`, `model`, `status`, `started_at`, `ended_at`, `total_cost_usd`, `input_tokens`, `output_tokens`, `num_turns`, `error` |
-| `documents` | `id`, `project_id`, `folder_id`, `doc_type`, `rel_path`, `title`, `is_stub`, `content_sha256`, `stub_sha256_at_creation`, `source_file_id`, `source_sha256`, `created_at`, `updated_at` — rebuildable by scanning the workspace |
-| `audit_log` | `id`, `at`, `user_id`, `project_id`, `action`, `target_type`, `target_id`, `details` jsonb |
+| `users` | id, email, password_hash (Argon2id), display_name, account_type, is_admin, must_change_password, mfa_secret_enc, mfa_enabled, recovery_codes_hash[], failed_logins, locked_until, is_active |
+| `auth_sessions` | id, user_id, token_hash, mfa_verified, expires_at, revoked_at, ip, user_agent |
+| `storage_connections` | id, type (`sharepoint`/`gdrive`/`localfs`), name, config jsonb, secret_enc, created_by |
+| `projects` | id, slug, name, client_name, storage_connection_id, storage_root jsonb, settings jsonb, created_by, archived_at |
+| `project_members` | project_id, user_id, role |
+| `uploads` | id, project_id, uploaded_by, repo_ref, created_at |
+| `upload_items` | id, upload_id, original_name, ext, size, sha256, staging_path, selected_doc_type, final_doc_type, title, intent (`new`/`version`), target_document_id, visibility, status, type_check, check_explanation, suggested_doc_type, conversion_meta jsonb, error |
+| `documents` | id, project_id, folder_id, doc_type, title, slug, visibility, current_version, is_stub, created_by, created_at |
+| `document_versions` | id, document_id, version, sha256, original_path, original_storage_version, markdown_path, markdown_storage_version, markdown_text, uploaded_by, upload_item_id, created_at |
+| `normalized_drafts` | id, document_version_id, status (`generating`/`ready`/`approved`/`discarded`/`failed`), sections jsonb, markdown, edited_by, approved_by, approved_at, storage_path, storage_version |
+| `agent_runs` | id, kind (`check`/`normalize`), upload_id, upload_item_id, session_id, model, status, cost_usd, input_tokens, output_tokens, turns, error, started_at, ended_at |
+| `events` | id, upload_id, type, payload jsonb, created_at (SSE replay) |
+| `audit_log` | id, at, user_id, project_id, action, target_type, target_id, details jsonb |
 
-Migrations via Alembic; `documents` and `audit_log` are indexed on `project_id`.
+`document_versions.markdown_text` keeps converted text in PostgreSQL so later phases can index without re-downloading from storage.
 
 ---
 
-## 9. REST API (`/api/v1`)
+## 11. REST API (`/api/v1`)
 
 | Area | Endpoints |
 |---|---|
-| Auth | `POST /auth/login`, `POST /auth/logout`, `GET /auth/me`, `POST /auth/change-password` |
-| Users (admin) | `GET /users`, `POST /users`, `PATCH /users/{id}`, `POST /users/{id}/reset-password` |
-| Projects | `GET /projects`, `POST /projects`, `GET /projects/{id}`, `PATCH /projects/{id}`, `DELETE /projects/{id}` (archive), `GET/PUT /projects/{id}/members` |
-| Workspace | `GET /projects/{id}/tree`, `GET /projects/{id}/gap-report`, `GET /projects/{id}/documents/{docId}` (Markdown), `GET /projects/{id}/documents/{docId}/download` (original) |
-| Jobs | `POST /projects/{id}/jobs` (multipart), `GET /projects/{id}/jobs`, `GET /jobs/{id}`, `GET /jobs/{id}/events` (SSE), `POST /jobs/{id}/reanalyze`, `POST /jobs/{id}/cancel` |
-| Review | `GET /jobs/{id}/proposals`, `PATCH /jobs/{id}/proposals/{pid}`, `POST /jobs/{id}/proposals/bulk-accept`, `PATCH /jobs/{id}/summary`, `POST /jobs/{id}/apply` |
+| Auth | `POST /auth/login`, `POST /auth/mfa/verify`, `POST /auth/mfa/enroll`, `POST /auth/mfa/confirm`, `POST /auth/logout`, `GET /auth/me`, `POST /auth/change-password` |
+| Admin | `GET/POST/PATCH /users`, `POST /users/{id}/reset-password`, `POST /users/{id}/reset-mfa`, `GET/POST/PATCH /storage-connections`, `POST /storage-connections/{id}/test` |
+| Projects | `GET/POST /projects`, `GET/PATCH/DELETE /projects/{id}`, `GET/PUT /projects/{id}/members`, `GET /projects/{id}/gap-report` |
+| Documents | `GET /projects/{id}/documents` (filter by folder, type, visibility, text), `GET /documents/{id}`, `GET /documents/{id}/versions`, `GET /documents/{id}/versions/{v}/original`, `GET /documents/{id}/versions/{v}/markdown`, `GET /documents/{id}/normalized`, `PATCH /documents/{id}` (title, visibility) |
+| Uploads | `POST /projects/{id}/uploads` (multipart + per-file metadata), `GET /uploads/{id}`, `GET /uploads/{id}/events` (SSE), `GET /me/tasks` |
+| Items | `POST /upload-items/{id}/confirm-type`, `POST /upload-items/{id}/retry`, `GET /upload-items/{id}/draft`, `PUT /upload-items/{id}/draft`, `POST /upload-items/{id}/draft/approve`, `POST /upload-items/{id}/draft/discard` |
+| Suggest | `GET /projects/{id}/version-suggestions?doc_type=&title=` |
 | Meta | `GET /taxonomy`, `GET /health` |
 
-SSE event types: `job.status`, `file.converted`, `file.failed`, `agent.started`, `agent.tool_call`, `agent.proposed`, `agent.finished`, `apply.progress`, `job.completed`, `job.failed`. Events are also persisted so a reconnecting client can replay from the last event id.
-
-OpenAPI is generated by FastAPI; the frontend uses a TypeScript client generated from it in CI/dev scripts.
+Every document endpoint enforces role and visibility; client users receive 404 for internal documents.
 
 ---
 
-## 10. Frontend (Next.js)
+## 12. Frontend Screens
 
-| # | Screen | Key elements |
-|---|---|---|
-| 1 | Login | e-mail + password, forced password change flow |
-| 2 | Projects | search, create, my role badge |
-| 3 | Project detail | tabs: **Structure** (6-folder tree, stubs dimmed, Markdown viewer, download original), **Gap report** (per folder status table, completeness %), **History** (jobs, cost), **Members & settings** (owner only: members, model, budget, threshold, archive) |
-| 4 | New ingestion | drag-and-drop files, notes textarea, repo reference, start; live progress (conversion per file, agent activity, running cost) |
-| 5 | Review | proposals table: folder/doc-type dropdowns, colour-coded confidence, expandable summary/reasoning, filters, multi-select, "Accept all ≥ threshold", editable project summary, **Apply** with confirmation dialog listing changes |
-| 6 | Job result | counts, cost, links to tree and gap report |
-| 7 | User admin | list, create, deactivate, reset password |
+1. Login → MFA (enrolment with QR + recovery codes on first login).
+2. Projects list.
+3. Project home: **Documents** browser grouped by the six folders (type, title, version, uploader, date, visibility badge, "normalised" badge; search and filters); document page with tabs Original preview / Markdown / Normalised / Versions.
+4. **Upload wizard** (section 6.1) with live per-file progress.
+5. **My tasks**: type confirmations and drafts awaiting approval.
+6. **Type confirmation** dialog: selected type, AI explanation, suggested type, keep / change.
+7. **Draft review**: side-by-side source and draft, section source references, Markdown editor, approve / discard.
+8. Gap report (internal only).
+9. Project settings (owner): members, model, budgets, storage root (read-only after creation).
+10. Admin: users, storage connections (with "Test connection").
 
-UI copy in English; strings kept in a single messages file so Vietnamese can be added later. State: server state via generated client + SWR/React Query; SSE via `EventSource` with reconnection.
-
----
-
-## 11. Authentication, Authorisation and Security
-
-- **Accounts**: local; Argon2id hashes; admin-created only; temporary password with forced change; first admin created by `uv run qc-agent create-admin`.
-- **Sessions**: opaque token in an `HttpOnly`, `Secure`, `SameSite=Lax` cookie; server-side `auth_sessions` row (8 h expiry, revocable); CSRF protection by `SameSite` plus a custom header check on state-changing requests.
-- **Brute force**: per-account lockout after 5 failures for 15 minutes; per-IP rate limit on `/auth/login`.
-- **Roles**: global `admin` (users, all projects) and `member`; per project `owner` (members, settings, archive), `editor` (jobs, review, apply), `viewer` (read, download).
-- **Secrets**: `.env` on the server; `.env.example` in repo; pre-commit secret scan (gitleaks).
-- **Files**: all paths resolved and asserted to be under `WORKSPACE_ROOT/<slug>`; downloads served through the backend with permission checks and `Content-Disposition: attachment`; workspace never mounted as static.
-- **Agent isolation**: no built-in file or shell tools; `cwd` is the job staging directory; session transcripts in the job's `.claude` directory, deleted with the job.
-- **Transport**: Caddy terminates TLS (internal CA or company certificate); HTTP only on localhost.
-- **Logging**: structured JSON; never logs document content, prompts, or secrets; agent tool inputs logged at debug level with document text redacted.
-- **Data processing notice**: README and project creation screen state that converted document text is sent to the Claude API; per-project customer confirmation is recorded in `audit_log` before the first real ingestion (checkbox + name of the confirming person).
-- **Deletion**: project archive moves the workspace to `<WORKSPACE_ROOT>/_trash/<slug>-<timestamp>/` (owner + confirm); permanent purge is an admin action with a second confirmation.
+English UI; strings in one messages file.
 
 ---
 
-## 12. Error Handling Matrix
+## 13. Security
+
+- **Internet exposure**: Caddy with automatic public TLS certificates; HSTS; security headers; only ports 80/443 open; database not exposed.
+- **Authentication**: Argon2id; admin-created accounts; forced password change; **mandatory TOTP MFA** with one-time recovery codes; admin MFA reset; lockout after 5 failures for 15 minutes; per-IP rate limiting on login and MFA endpoints.
+- **Sessions**: opaque token in `HttpOnly; Secure; SameSite=Lax` cookie; server-side session (8 h, revocable); CSRF header check on state-changing requests.
+- **Authorisation**: role + visibility checks in one dependency used by every document route; tests cover client access to internal documents.
+- **Secrets**: `.env` on the server; storage secrets encrypted in DB; least-privilege Graph permission (`Sites.Selected`); service account limited to designated Shared Drives; gitleaks pre-commit.
+- **Uploads**: type and size limits, zip safety, file names sanitised; no execution of uploaded content; files streamed to clients with `Content-Disposition: attachment` and correct content type.
+- **Agent**: no built-in tools; staging-only `cwd`; transcripts in staging, deleted on cleanup.
+- **Logging**: no document content, prompts or secrets in logs.
+- **Data processing**: per-project confirmation that converted document text may be sent to the Claude API, recorded in `audit_log` with the confirming person, required before the first upload.
+- **Archive**: archiving a project hides it in the web app; storage content is left untouched for IT to manage.
+
+---
+
+## 14. Error Handling
 
 | Failure | Behaviour |
 |---|---|
-| Unsupported file / too large | Rejected at upload with a per-file message; other files proceed |
-| Zip path traversal / limits exceeded | Entire zip rejected with reason |
-| Conversion error | File marked `failed`; job continues; user may re-upload another format |
-| Scanned PDF (low text) | Converted with `low_text` warning; shown in review |
-| Agent budget / turns / timeout / API error | Run recorded with status; job → `awaiting_review` with heuristic fallbacks and `agent_incomplete` flag; "Re-analyse" button |
-| Invalid agent proposal | Rejected inside the tool; agent receives errors and retries |
-| Apply error mid-way | Job → `failed` with partial report; apply is re-runnable and idempotent |
-| Concurrent apply on same project | Second waits on advisory lock |
-| Missing API key / DB unreachable at startup | Process exits with a clear message; `/health` reports the failing check |
-| SSE disconnect | Client reconnects with `Last-Event-ID`; events replayed |
+| Invalid file / limits | Rejected at upload per file |
+| Conversion failure | Item `failed` with reason; retry or re-upload |
+| Low-text PDF | Published with warning; check and normalise skipped |
+| Check agent failure | `type_check: skipped`; item publishes with user's type; logged |
+| Storage error (auth, throttling 429, 5xx) | Retry with exponential backoff honouring `Retry-After`; after limit item `failed` with retry button; connection health shown in admin |
+| Storage auth expired / revoked | `/health` and admin page show failing connection; uploads to affected projects blocked with a clear message |
+| Normalise failure / budget | Draft `failed`; document stays published; retry |
+| Draft never approved | Stays in My tasks; no effect on published document |
+| Concurrent publishes in one project | Serialised by advisory lock |
+| SSE disconnect | Replay from `Last-Event-ID` |
 
 ---
 
-## 13. Testing Strategy
+## 15. Testing Strategy
 
-### 13.1 Spike (before implementation of the agent layer)
-
-Throwaway script, not kept in the product: Agent SDK on Python 3.12 with custom tools only, `permission_mode="dontAsk"`, `setting_sources=[]`, `CLAUDE_CONFIG_DIR` relocated; two sessions concurrently in one asyncio process; 10 sample documents. Record: whether built-in tools are really unavailable, where session files land, concurrency behaviour, cost and duration. Outputs decide `AGENT_CONCURRENCY` and the default budget.
-
-### 13.2 Automated tests
-
-| Layer | Tooling | Coverage |
-|---|---|---|
-| Unit (backend) | pytest | converters (fixtures generated in tests), zip safety, slugs and path safety, taxonomy loader, heuristics, stubs, gap report, apply idempotency, repo tree, tool handler validation |
-| Agent | pytest + `FakeAnalyzer` | pipeline behaviour with scripted proposals, incomplete runs, timeouts; one opt-in integration test against the real API (`QC_AGENT_LIVE_TESTS=1`) with a tiny fixture set and a 0.50 USD budget |
-| API | pytest + httpx + PostgreSQL in Docker | auth, roles (403 paths), job lifecycle, review, apply, SSE replay |
-| Frontend | Vitest + React Testing Library | components and state |
-| End-to-end | Playwright against Docker Compose | login → create project → upload → review → apply → tree and gap report |
-| Quality gates | ruff, mypy, ESLint, tsc, gitleaks | run locally via pre-commit; CI platform to be confirmed |
-
-Test data: synthetic sample project (10 files) committed under `backend/tests/fixtures/sample-project/`, containing no customer data.
+- **Spike first** (throwaway): Agent SDK isolation and concurrency (section 7.3); Graph and Drive upload + version behaviour on a test site / Shared Drive.
+- **Unit**: converters, naming and slugs, zip safety, taxonomy, version suggestion, stubs, gap report, tool validation, draft assembly, visibility rules.
+- **Storage contract suite** run on local FS in every test run; on SharePoint and Google Drive when `QC_AGENT_LIVE_STORAGE=1`.
+- **Agent**: scripted fake for pipeline tests; opt-in live test with a tiny fixture set and a 0.50 USD cap.
+- **API**: httpx + PostgreSQL container; role/visibility matrix tests (every role × internal/shared document).
+- **Frontend**: Vitest + Testing Library; Playwright end-to-end on Docker Compose with local FS storage: login + MFA → upload with type → mismatch confirm → publish → draft approve → client sees shared document only.
+- **Quality gates**: ruff, mypy, ESLint, tsc, gitleaks; CI platform to be confirmed.
+- Fixtures are synthetic; no customer data in the repository.
 
 ---
 
-## 14. Deployment and Operations
+## 16. Deployment and Operations
 
-- `deploy/docker-compose.yml`: services `db` (postgres:16, volume `pgdata`), `backend` (uvicorn, volume `workspace`), `frontend` (`next start`), `caddy` (ports 80/443, volume `caddy_data`). Alembic migrations run on backend start-up.
-- Sizing: 2 vCPU, 4 GB RAM, disk sized to the expected workspace plus PostgreSQL.
-- Runbook (`06-deployment` of QC-Agent's own docs, written in Phase 1): start/stop, logs, nightly `pg_dump` and workspace rsync, restore drill, rotating `ANTHROPIC_API_KEY`, creating the first admin, upgrading, clearing stuck jobs.
-- Health: `GET /health` checks DB, workspace writability, presence of API key, Agent SDK import.
-- Monitoring in Phase 1: container logs + `agent_runs` cost table viewable in the History tab.
+- Cloud VM (2 vCPU / 4 GB RAM to start) with a public DNS name. Docker Compose services: `db`, `backend`, `frontend`, `caddy`. Volumes: `pgdata`, `staging`, `caddy_data`.
+- Backups: nightly `pg_dump` to off-host storage; documents themselves are in SharePoint / Drive, covered by their own retention.
+- Runbook (written in Phase 1): first admin creation, storage connection setup per platform, rotating Anthropic key / client secret / service account key, restore, stuck items.
+- `/health`: DB, staging writability, Anthropic key presence, Agent SDK import, each storage connection.
 
----
+### 16.1 Configuration (`.env`)
 
-## 15. Configuration (`.env`)
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `DATABASE_URL` | — | PostgreSQL DSN |
-| `SESSION_SECRET` | — | Cookie/session signing |
-| `ANTHROPIC_API_KEY` | — | Passed only to the SDK subprocess |
-| `WORKSPACE_ROOT` | `./workspace` | Knowledge-base root |
-| `PUBLIC_BASE_URL` | — | Used for cookies and links |
-| `COOKIE_SECURE` | `true` | `false` only for localhost dev |
-| `MAX_UPLOAD_FILE_MB` | `50` | Per file |
-| `MAX_UPLOAD_JOB_MB` | `500` | Per job |
-| `STAGING_RETENTION_DAYS` | `7` | `_jobs` cleanup |
-| `AGENT_MODEL_DEFAULT` | `claude-opus-5` | Project default |
-| `AGENT_MAX_BUDGET_USD_DEFAULT` | `3.0` | Project default |
-| `AGENT_TIMEOUT_SECONDS` | `900` | Hard stop per run |
-| `AGENT_CONCURRENCY` | `1` | Semaphore size |
-| `CONFIDENCE_THRESHOLD_DEFAULT` | `0.8` | Bulk-accept threshold |
-| `LOG_LEVEL` | `info` | |
+| Variable | Default |
+|---|---|
+| `DATABASE_URL`, `SESSION_SECRET`, `SECRET_ENCRYPTION_KEY`, `ANTHROPIC_API_KEY`, `PUBLIC_BASE_URL` | required |
+| `STAGING_ROOT` | `./staging` |
+| `LOCAL_STORAGE_ROOT` | `./workspace` (dev only) |
+| `MAX_UPLOAD_FILE_MB` / `MAX_UPLOAD_BATCH_MB` | 50 / 500 |
+| `STAGING_RETENTION_DAYS` | 7 |
+| `AGENT_MODEL_DEFAULT` | `claude-opus-5` |
+| `AGENT_CHECK_BUDGET_USD` / `AGENT_NORMALIZE_BUDGET_USD` | 1.0 / 2.0 |
+| `AGENT_CONCURRENCY` | 1 |
+| `COOKIE_SECURE` | `true` |
 
 ---
 
-## 16. Non-Functional Targets (Phase 1)
+## 17. Non-Functional Targets
 
 | Metric | Target |
 |---|---|
-| Conversion of 10 documents ≤ 50 pages each | < 2 minutes |
-| Agent analysis of 10 documents | < 10 minutes, < default budget |
-| SSE progress latency | < 2 seconds |
-| Apply for 50 files | < 30 seconds |
-| Concurrent users | 10 without degradation |
-| Availability | Business hours; restart-safe (job state in DB) |
+| Upload → published (10 files, ≤ 50 pages each, no mismatch) | < 3 minutes |
+| Normalised draft per document (≤ 50 pages) | < 10 minutes |
+| Document list load | < 1 second for 500 documents |
+| Concurrent users | 30 |
+| SSE latency | < 2 seconds |
 
 ---
 
-## 17. Risks, Dependencies and Items Requiring Confirmation
+## 18. Risks, Dependencies, Items Requiring Confirmation
 
-### 17.1 Risks
+### 18.1 Risks
 
 | Risk | Mitigation |
 |---|---|
-| Agent SDK is 0.x; API may change | Pin version; `Analyzer` interface; spike |
-| Concurrency of SDK sessions in one process undocumented | Default concurrency 1; spike measures |
-| Session transcripts may contain document text | Relocate via `CLAUDE_CONFIG_DIR` into job staging; delete on cleanup; verify in spike |
-| Scanned PDFs yield no text | `low_text` warning; OCR deferred |
-| Runaway cost | Per-job budget, turn cap, timeout; cost visible per run |
-| Customer data sent to external API | Per-project confirmation recorded; documented in README |
-| Classification quality on Vietnamese documents | Agent reads full text; heuristics as fallback; human review always |
+| Normalised content misrepresents the source | Source-only rule, section source references, explicit "Not found in source", uploader approval, banner stating the original is authoritative |
+| Customer approves an incorrect normalised draft | Original always kept and linked; internal owners can discard a normalised version later |
+| Two storage platforms double integration and test effort | One interface + shared contract suite; local adapter for most tests |
+| Graph / Drive throttling | Backoff with `Retry-After`; batch uploads serialised per project |
+| Internet exposure | MFA, rate limits, lockout, minimal open ports, security headers |
+| Agent SDK 0.x | Pinned; behind interface; spike |
+| Customer data to external LLM | Per-project confirmation |
+| Scanned PDFs | Warning; OCR deferred |
 
-### 17.2 Dependencies (stakeholder / IT)
+### 18.2 Dependencies
 
-- Docker Desktop or OrbStack on developer machines (not installed on the current dev machine); Docker on the server.
-- A dedicated Anthropic API key with a spending limit.
-- Internal Linux VM, internal DNS name, TLS certificate or acceptance of Caddy's internal CA.
-- Python 3.12 via `uv` (system Python on the dev machine is 3.9, below the SDK minimum of 3.10).
+- Entra ID app registration with `Sites.Selected` and per-site grants (IT).
+- Google Cloud service account with Drive API enabled, added to Shared Drives (IT / Workspace admin).
+- Cloud VM, public DNS name, outbound access to Graph, Drive and Anthropic APIs.
+- Dedicated Anthropic API key with a spending limit.
+- Docker on the dev machine (not installed today); Python 3.12 via uv (system Python is 3.9).
 
-### 17.3 Items requiring confirmation
+### 18.3 To confirm
 
-- CI platform (GitHub Actions / GitLab CI / other) — pipeline files will be added once decided.
-- Customer confirmation process wording for sending document text to the Claude API.
-- Whether a Vietnamese UI translation is wanted in a later phase.
-- Server specification and backup destination.
-
----
-
-## 18. Acceptance Criteria (Phase 1)
-
-1. An admin creates a user; the user logs in and is forced to change the temporary password; a `viewer` receives HTTP 403 when creating a job.
-2. Uploading the 10-file sample set (docx, pdf, xlsx, md, Confluence zip) results in every file either converted or marked failed with a per-file reason.
-3. The agent submits a proposal for every converted file with confidence and reasoning; the run cost is below the configured budget; a configuration test proves the agent has no file-writing or shell tools.
-4. After changing one proposal, rejecting one file and applying, the workspace contains exactly the six numbered folders, each imported file at its canonical path with valid frontmatter, originals in `_sources`, stubs for missing required types, and a gap report that matches the filesystem.
-5. Re-running apply for the same job produces no filesystem changes (verified by hashing the workspace before and after).
-6. Providing a repository reference produces `04-source/repo-structure.md` with a directory tree and language statistics and leaves no cloned code in the workspace.
-7. The full stack runs via Docker Compose on the server behind HTTPS; `/health` is green; a secret scan of the repository reports no findings.
+- CI platform.
+- Wording of the customer data-processing confirmation.
+- Cloud provider, VM size and backup destination.
+- Whether customers may see the version history of shared documents (assumed yes).
 
 ---
 
-## 19. Glossary
+## 19. Acceptance Criteria
+
+1. Admin creates an internal user and a customer user; both must change password and enrol MFA; login without MFA is impossible.
+2. An admin configures one SharePoint and one Google Drive connection; "Test connection" succeeds for both; one project is created on each.
+3. An editor uploads the 10-file sample set selecting a type per file; every file is converted or fails with a reason; files whose type matches are published without any further action.
+4. A file uploaded with a deliberately wrong type is flagged with an explanation; the uploader changes the type; the file is published in the correct folder.
+5. Published files appear in the correct folder in SharePoint / Drive with the naming convention and frontmatter; the gap report and stubs reflect the published set.
+6. Uploading a changed SRS as "new version" creates version 2 in the web app and a new native version in storage; uploading an identical file is rejected as no change.
+7. A normalised draft follows the SRS template, marks absent sections "Not found in source", lists source references; after the uploader edits and approves, `*.normalized.md` appears in storage with the banner.
+8. The customer user sees only shared documents (including those they uploaded) and receives 404 for an internal document URL; they cannot see the gap report.
+9. The agent configuration test proves no file-writing, shell or web tools are available.
+10. The stack runs on a cloud VM via Docker Compose behind a valid public TLS certificate; `/health` is green; the secret scan reports no findings.
+
+---
+
+## 20. Glossary
 
 | Term | Meaning |
 |---|---|
-| Workspace | The per-project directory holding the 6-folder knowledge base |
-| Taxonomy | The data file defining folders, doc types, required flags and templates |
-| Stub | A template Markdown file standing in for a missing required document |
-| Gap report | Generated report of present / stub / missing document types per folder |
-| Job | One ingestion run: upload → convert → analyse → review → apply |
-| Proposal | A suggested (folder, doc type, title) for one uploaded file |
-| Agent run | One Claude Agent SDK session executed for a job |
-| Apply | The deterministic step that writes approved files into the workspace |
+| Document | Logical item (type + title) with versions |
+| Version | One uploaded revision of a document: original + converted Markdown (+ normalised) |
+| Type check | Agent verification of the uploader's selected document type |
+| Normalised version | AI draft in the type's template, published after uploader approval |
+| Storage connection | Configured SharePoint or Google Drive credentials |
+| Visibility | `internal` or `shared` with customer users |
+| Stub | Template placeholder for a missing required document type |

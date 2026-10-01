@@ -118,7 +118,7 @@ async def verify_second_factor(
         ctx.auth_session.mfa_verified = True
         await audit.record(db, "auth.mfa_verified", user_id=user.id)
     else:
-        if register_failure(user, settings, moment):
+        if await register_failure(db, user, settings, moment):
             ctx.auth_session.revoked_at = moment
         await audit.record(db, "auth.mfa_failed", user_id=user.id)
     await db.commit()

@@ -12,6 +12,7 @@ os.environ["DATABASE_URL"] = os.environ["TEST_DATABASE_URL"]
 os.environ.setdefault("SESSION_SECRET", "test-session-secret-not-for-production")
 os.environ.setdefault("SECRET_ENCRYPTION_KEY", Fernet.generate_key().decode())
 os.environ["COOKIE_SECURE"] = "false"
+os.environ["EXPOSE_DOCS"] = "false"  # a developer .env may enable docs; tests expect them hidden
 
 import pytest  # noqa: E402
 from fastapi import FastAPI  # noqa: E402

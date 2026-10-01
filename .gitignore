@@ -1,0 +1,19 @@
+# secrets
+.env
+*.env.local
+service-account*.json
+# python
+__pycache__/
+*.pyc
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+# app data
+workspace/
+staging/
+# node
+node_modules/
+.next/
+# superpowers
+.superpowers/

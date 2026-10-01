@@ -24,7 +24,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         yield
         await dispose_engine()
 
-    app = FastAPI(title="QC-Agent", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(
+        title="QC-Agent",
+        version="0.1.0",
+        lifespan=lifespan,
+        docs_url="/docs" if app_settings.expose_docs else None,
+        redoc_url=None,
+        openapi_url="/openapi.json" if app_settings.expose_docs else None,
+    )
     app.state.settings = app_settings
     app.state.auth_limiter = SlidingWindowLimiter(
         limit=app_settings.rate_limit_auth_per_5min, window_seconds=300

@@ -18,9 +18,25 @@ uv run qc-agent create-admin --email you@techvify.com.vn --name "Your Name"
 uv run uvicorn --factory app.main:create_app --reload
 ```
 
-API docs: http://localhost:8000/docs
+API docs: http://localhost:8000/docs (requires `EXPOSE_DOCS=true`, which `.env.example` sets for local development; docs are off by default).
+
+## Behind a reverse proxy
+
+Run uvicorn with `--proxy-headers` and set `FORWARDED_ALLOW_IPS` to the proxy's address, otherwise
+rate limiting and session IPs see only the proxy's address:
+
+```bash
+FORWARDED_ALLOW_IPS=10.0.0.5 uv run uvicorn --factory app.main:create_app --proxy-headers
+```
 
 ## Tests
+
+Activate the pre-commit hooks once (from the repository root) so the gitleaks secret scan,
+ruff and mypy run on every commit:
+
+```bash
+uv tool install pre-commit && pre-commit install
+```
 
 ```bash
 uv run pytest

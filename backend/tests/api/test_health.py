@@ -55,3 +55,17 @@ async def test_state_changing_request_with_csrf_header_reaches_router() -> None:
     async with _client_with(_OkSession(), headers={"X-QC-Agent": "1"}) as client:
         response = await client.post("/api/v1/health")
     assert response.status_code == 405  # no POST route; the guard let it through
+
+
+async def test_api_docs_are_hidden_by_default() -> None:
+    async with _client_with(_OkSession()) as client:
+        assert (await client.get("/docs")).status_code == 404
+        assert (await client.get("/openapi.json")).status_code == 404
+        assert (await client.get("/redoc")).status_code == 404
+
+
+async def test_api_docs_can_be_exposed() -> None:
+    app = create_app(Settings(expose_docs=True))  # type: ignore[call-arg]
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as c:
+        assert (await c.get("/openapi.json")).status_code == 200
+        assert (await c.get("/docs")).status_code == 200

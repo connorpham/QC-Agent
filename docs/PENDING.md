@@ -4,7 +4,7 @@ Việc còn nợ, tạm dừng ngày 2026-10-01 để xử lý task khác. Đán
 
 ## 1. Review spec Giai đoạn 1 (owner: Connor)
 
-- [ ] Đọc và duyệt `docs/superpowers/specs/2026-10-01-qc-agent-phase1-ingestion-design.md` (nhánh `docs/phase1-ingestion-spec`).
+- [x] Đọc và duyệt `docs/superpowers/specs/2026-10-01-qc-agent-phase1-ingestion-design.md` (nhánh `docs/phase1-ingestion-spec`).
 - [ ] Spec đã lên v2 (người dùng chọn loại khi upload, SharePoint + Google Drive, khách hàng dùng web app, MFA). Kiểm tra các điểm tôi tự quyết khi viết v2:
   - [ ] Stub chỉ tạo cho loại tài liệu bắt buộc (mục 5.5).
   - [ ] Loại `api-spec`, `repo-structure`, `test-cases` không chuẩn hóa template (cờ `normalize: false`, mục 5.2).
@@ -29,8 +29,11 @@ Việc còn nợ, tạm dừng ngày 2026-10-01 để xử lý task khác. Đán
 - [ ] Site SharePoint và Shared Drive dùng để test.
 - [ ] Python 3.12 qua uv (máy hiện có Python 3.9 hệ thống).
 
-## 4. Bước tiếp theo sau khi spec được duyệt (owner: Claude)
+## 4. Triển khai (owner: Claude)
 
-- [ ] Lập kế hoạch triển khai bằng skill writing-plans.
-- [ ] Spike Agent SDK: chạy song song, `setting_sources=[]`, `CLAUDE_CONFIG_DIR`, chi phí trên 10 tài liệu mẫu.
-- [ ] Spike lưu trữ: upload và phiên bản trên SharePoint (Graph) và Google Drive.
+- [x] Spec v2 được duyệt (2026-10-01).
+- [x] Lập kế hoạch triển khai: `docs/superpowers/plans/2026-10-01-phase1-roadmap.md`.
+- [ ] Review Plan 0 và Plan 1, chọn cách thực thi (owner: Connor).
+- [ ] Thực thi Plan 1 (backend foundation). Cần Docker trước.
+- [ ] Thực thi Plan 0, spike Agent SDK (cần API key): chạy song song, `setting_sources=[]`, `CLAUDE_CONFIG_DIR`, chi phí trên 10 tài liệu mẫu.
+- [ ] Thực thi Plan 0, spike lưu trữ (cần IT chuẩn bị site SharePoint và Shared Drive test): upload và phiên bản trên SharePoint (Graph) và Google Drive.

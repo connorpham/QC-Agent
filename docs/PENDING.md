@@ -11,7 +11,7 @@ Việc còn nợ, tạm dừng ngày 2026-10-01 để xử lý task khác. Đán
   - [ ] Bản mới chỉ thay bản chuẩn hóa cũ sau khi bản nháp mới được duyệt (mục 5.4).
   - [ ] Kiểm tra loại bị lỗi thì vẫn công bố theo loại người dùng chọn (mục 7.6).
   - [ ] Khách hàng được xem lịch sử phiên bản của tài liệu chia sẻ (giả định, mục 18.3).
-  - [ ] Lưu trữ của dự án không đổi được sau khi tạo (mục 8.5).
+  - [x] Lưu trữ của dự án không đổi được sau khi tạo (mục 8.5) — spec v2.1: đổi được qua migration (Plan 3c).
 
 ## 2. Quyết định cần xác nhận (owner: Connor / IT)
 
@@ -36,7 +36,10 @@ Việc còn nợ, tạm dừng ngày 2026-10-01 để xử lý task khác. Đán
 - [ ] Review Plan 0 và Plan 1, chọn cách thực thi (owner: Connor).
 - [x] Thực thi Plan 1 (backend foundation). Cần Docker trước.
 - [x] Lập kế hoạch Plan 2 (local ingestion): `docs/superpowers/plans/2026-10-01-plan-2-local-ingestion.md`; roadmap đổi thứ tự (Plan 3 = cloud storage).
-- [ ] Thực thi Plan 2 (owner: Claude; review: Connor).
+- [x] Thực thi Plan 2 (owner: Claude; review: Connor) — merged PR #3.
+- [x] Lập kế hoạch Plan 3a (UI shell + storage settings): `docs/superpowers/plans/2026-10-01-plan-3a-ui-storage-settings.md`; Plan 3 tách thành 3a/3b/3c.
+- [ ] Thực thi Plan 3a (owner: Claude; review: Connor).
+- [ ] Lập kế hoạch Plan 3b (SharePoint + Google Drive; cần site test của IT) và Plan 3c (đổi lưu trữ có migration).
 - [ ] Thực thi Plan 0, spike Agent SDK (cần API key): chạy song song, `setting_sources=[]`, `CLAUDE_CONFIG_DIR`, chi phí trên 10 tài liệu mẫu.
 - [ ] Thực thi Plan 0, spike lưu trữ (cần IT chuẩn bị site SharePoint và Shared Drive test): upload và phiên bản trên SharePoint (Graph) và Google Drive.
 
@@ -50,7 +53,7 @@ Việc còn nợ, tạm dừng ngày 2026-10-01 để xử lý task khác. Đán
 - [ ] Plan 6: job dọn `auth_sessions` đã hết hạn hoặc bị thu hồi.
 - [ ] Plan 6: runbook ghi rõ xoay `SESSION_SECRET` sẽ làm mất hiệu lực mọi phiên và mã khôi phục MFA.
 - [x] Cập nhật Global Constraints của Plan 1: giới hạn auth mặc định 100 request mỗi 5 phút, khóa chỉ reset sau MFA thành công.
-- [ ] Plan 3: chính sách version cho gap report và `project.yaml` trên SharePoint/Drive (mỗi lần publish hiện tạo 3 version); bản gốc của file `.md` upload chỉ xem được qua lịch sử phiên bản.
+- [ ] Plan 3b: chính sách version cho gap report và `project.yaml` trên SharePoint/Drive (mỗi lần publish hiện tạo 3 version); bản gốc của file `.md` upload chỉ xem được qua lịch sử phiên bản.
 - [ ] Plan 6: giới hạn request body ở Caddy (`request_body` `max_size`).
 - [ ] Plan 6: requeue khi chạy nhiều worker (chỉ reset item quá thời gian chờ) hoặc giữ một worker.
 - [ ] Plan 6: test lifespan wiring (requeue khi khởi động, hủy task nền khi tắt).

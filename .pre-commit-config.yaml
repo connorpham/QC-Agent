@@ -17,3 +17,9 @@ repos:
         language: system
         pass_filenames: false
         files: ^backend/
+      - id: frontend
+        name: frontend lint and format
+        entry: bash -c 'cd frontend && pnpm lint && pnpm format'
+        language: system
+        pass_filenames: false
+        files: ^frontend/

@@ -16,6 +16,7 @@ from app.db.models import AuthSession, Project, ProjectMember, User
 from app.db.session import get_session
 from app.ingestion.taxonomy import Taxonomy
 from app.services.context import SessionContext
+from app.services.pipeline import PipelineContext
 
 
 def settings_dep(request: Request) -> Settings:
@@ -33,6 +34,14 @@ def taxonomy_dep(request: Request) -> Taxonomy:
 
 
 TaxonomyDep = Annotated[Taxonomy, Depends(taxonomy_dep)]
+
+
+def pipeline_dep(request: Request) -> PipelineContext:
+    pipeline: PipelineContext = request.app.state.pipeline
+    return pipeline
+
+
+PipelineDep = Annotated[PipelineContext, Depends(pipeline_dep)]
 
 
 async def session_context(request: Request, db: DbSession, settings: AppSettings) -> SessionContext:
@@ -110,20 +119,24 @@ class ProjectContext:
     role: str
 
 
+async def resolve_role(db: AsyncSession, project: Project, user: User) -> str | None:
+    """The user's role on a live project, ``owner`` for admins, None for non-members."""
+    if project.archived_at is not None:
+        return None
+    if user.is_admin:
+        return "owner"
+    return await db.scalar(
+        select(ProjectMember.role).where(
+            ProjectMember.project_id == project.id, ProjectMember.user_id == user.id
+        )
+    )
+
+
 def require_project_role(*allowed: str) -> Callable[..., Awaitable[ProjectContext]]:
     async def dependency(project_id: uuid.UUID, user: CurrentUser, db: DbSession) -> ProjectContext:
         project = await db.get(Project, project_id)
-        if project is None or project.archived_at is not None:
-            raise HTTPException(status_code=404, detail="Project not found.")
-        if user.is_admin:
-            role: str | None = "owner"
-        else:
-            role = await db.scalar(
-                select(ProjectMember.role).where(
-                    ProjectMember.project_id == project_id, ProjectMember.user_id == user.id
-                )
-            )
-        if role is None:
+        role = None if project is None else await resolve_role(db, project, user)
+        if project is None or role is None:
             raise HTTPException(status_code=404, detail="Project not found.")
         if role not in allowed:
             raise HTTPException(status_code=403, detail="You do not have access to this action.")
@@ -135,3 +148,4 @@ def require_project_role(*allowed: str) -> Callable[..., Awaitable[ProjectContex
 AnyMember = Annotated[ProjectContext, Depends(require_project_role(*ALL_ROLES))]
 InternalMember = Annotated[ProjectContext, Depends(require_project_role(*INTERNAL_ROLES))]
 ProjectOwner = Annotated[ProjectContext, Depends(require_project_role("owner"))]
+Uploader = Annotated[ProjectContext, Depends(require_project_role("owner", "editor", "client"))]

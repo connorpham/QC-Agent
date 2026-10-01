@@ -1,3 +1,4 @@
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -6,27 +7,35 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
 from app.agent.analyzer import Analyzer, SkipAnalyzer
-from app.api.routes import auth, health, projects, users
+from app.api.routes import auth, health, projects, uploads, users
 from app.api.routes import taxonomy as taxonomy_routes
 from app.core.config import Settings, get_settings
 from app.core.ratelimit import SlidingWindowLimiter
 from app.db.session import dispose_engine, init_engine, is_initialised
 from app.ingestion.taxonomy import load_taxonomy
+from app.services.pipeline import PipelineContext, requeue_stale_items
 
 API_PREFIX = "/api/v1"
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 CSRF_HEADER = "x-qc-agent"
+logger = logging.getLogger(__name__)
 
 
 def create_app(settings: Settings | None = None, *, analyzer: Analyzer | None = None) -> FastAPI:
     app_settings = settings or get_settings()
     templates_dir = Path(app_settings.templates_dir) if app_settings.templates_dir else None
     taxonomy = load_taxonomy(templates_dir)  # validates the taxonomy at startup
+    pipeline = PipelineContext(
+        settings=app_settings, taxonomy=taxonomy, analyzer=analyzer or SkipAnalyzer()
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         if not is_initialised():
             init_engine(app_settings.database_url)
+        requeued = await requeue_stale_items(pipeline)
+        if requeued:
+            logger.info("Re-queued %d upload items left in progress", requeued)
         yield
         await dispose_engine()
 
@@ -40,7 +49,8 @@ def create_app(settings: Settings | None = None, *, analyzer: Analyzer | None = 
     )
     app.state.settings = app_settings
     app.state.taxonomy = taxonomy
-    app.state.analyzer = analyzer or SkipAnalyzer()
+    app.state.analyzer = pipeline.analyzer
+    app.state.pipeline = pipeline
     app.state.auth_limiter = SlidingWindowLimiter(
         limit=app_settings.rate_limit_auth_per_5min, window_seconds=300
     )
@@ -62,4 +72,5 @@ def create_app(settings: Settings | None = None, *, analyzer: Analyzer | None = 
     app.include_router(users.router, prefix=API_PREFIX)
     app.include_router(projects.router, prefix=API_PREFIX)
     app.include_router(taxonomy_routes.router, prefix=API_PREFIX)
+    app.include_router(uploads.router, prefix=API_PREFIX)
     return app

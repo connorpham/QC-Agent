@@ -21,6 +21,8 @@ from app.storage.select import connection_backend, localfs_root
 
 logger = logging.getLogger(__name__)
 
+# Migration 0003 holds a frozen copy of this name and root; changing them here does not
+# rename the connection in databases that already ran that migration.
 DEFAULT_CONNECTION_NAME = "Local storage"
 DEFAULT_ROOT_PATH = "."
 ACCEPTED_TYPES = ("localfs",)
@@ -211,7 +213,10 @@ async def update_connection(
     config: dict[str, Any] | None = None,
     secret: str | None = None,
     is_active: bool | None = None,
+    commit: bool = True,
 ) -> StorageConnection:
+    """Apply the given changes. ``commit=False`` leaves them pending so a route can combine
+    this with another change in one transaction (one route, one commit)."""
     changes: dict[str, Any] = {}
     if name is not None and name != connection.name:
         if await _name_taken(db, name, exclude=connection.id):
@@ -252,12 +257,17 @@ async def update_connection(
         target_id=str(connection.id),
         details={"fields": sorted(changes)},
     )
-    await db.commit()
-    await db.refresh(connection)
+    if commit:
+        await db.commit()
+        await db.refresh(connection)
     return connection
 
 
-async def set_default(db: AsyncSession, connection: StorageConnection, *, actor: User) -> None:
+async def set_default(
+    db: AsyncSession, connection: StorageConnection, *, actor: User, commit: bool = True
+) -> None:
+    """Move the default to ``connection``. ``commit=False`` leaves the move pending so a route
+    can apply further changes in the same transaction and commit once."""
     if connection.is_default:
         return
     if not connection.is_active:
@@ -271,8 +281,9 @@ async def set_default(db: AsyncSession, connection: StorageConnection, *, actor:
         target_id=str(connection.id),
         details={"previous_id": None if previous is None else str(previous)},
     )
-    await db.commit()
-    await db.refresh(connection)
+    if commit:
+        await db.commit()
+        await db.refresh(connection)
 
 
 async def test_connection(

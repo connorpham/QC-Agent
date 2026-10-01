@@ -100,9 +100,13 @@ async def update_connection(
         raise HTTPException(
             status_code=422, detail="Set another connection as the default instead."
         )
+    # One route, one commit: the default move and the field update share a transaction, so a
+    # refusal from either part leaves the connection — and the default — exactly as it was.
     try:
+        changed = False
         if body.is_default:
-            await connections_service.set_default(db, connection, actor=admin)
+            await connections_service.set_default(db, connection, actor=admin, commit=False)
+            changed = True
         if body.model_fields_set & {"name", "config", "secret", "is_active"}:
             await connections_service.update_connection(
                 db,
@@ -114,11 +118,18 @@ async def update_connection(
                 config=body.config,
                 secret=body.secret,
                 is_active=body.is_active,
+                commit=False,
             )
+            changed = True
     except connections_service.StorageConnectionError as exc:
+        await db.rollback()
         raise HTTPException(status_code=422, detail=exc.message) from exc
     except connections_service.StorageConnectionConflict as exc:
+        await db.rollback()
         raise HTTPException(status_code=409, detail=exc.message) from exc
+    if changed:
+        await db.commit()
+        await db.refresh(connection)
     return _out(connection)
 
 

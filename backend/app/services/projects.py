@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -52,7 +52,9 @@ async def root_in_use(db: AsyncSession, connection_id: uuid.UUID, root: str) -> 
     found = await db.scalar(
         select(Project.id).where(
             Project.storage.op("->>")("connection_id") == str(connection_id),
-            Project.storage.op("->>")("root") == root,
+            # Case-insensitive: macOS, Windows and the Plan 3b cloud backends treat "Acme" and
+            # "acme" as the same folder.
+            func.lower(Project.storage.op("->>")("root")) == root.lower(),
         )
     )
     return found is not None
@@ -91,7 +93,7 @@ async def create_project(
     except StoragePathError as exc:
         raise ProjectValidationError(str(exc)) from exc
     # Serialise on (connection, root) too: two different names may ask for the same folder.
-    await acquire_xact_lock(db, "project-root", f"{connection.id}:{root_folder}")
+    await acquire_xact_lock(db, "project-root", f"{connection.id}:{root_folder.lower()}")
     if await root_in_use(db, connection.id, root_folder):
         raise ProjectValidationError(
             "This root folder is already used by another project on the selected connection."

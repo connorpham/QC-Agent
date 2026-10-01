@@ -272,3 +272,17 @@ async def test_duplicate_root_on_same_connection_is_rejected(
     assert clash.status_code == 422
     names = sorted(p.name for p in (await db.scalars(select(Project))).all())
     assert names == ["First", "Plain", "Third"]
+
+
+async def test_root_uniqueness_ignores_case(
+    make_client: MakeClient, db: AsyncSession, settings: Settings
+) -> None:
+    """macOS, Windows and the Plan 3b cloud backends treat 'Acme' and 'acme' as one folder."""
+    user = await make_user(db, settings)
+    c = await _client_for(make_client, db, settings, user)
+    first = await c.post("/api/v1/projects", json={"name": "First", "storage_root": "Acme"})
+    assert first.status_code == 201
+    second = await c.post("/api/v1/projects", json={"name": "Second", "storage_root": "acme"})
+    assert second.status_code == 422 and "already used" in second.json()["detail"]
+    names = sorted(p.name for p in (await db.scalars(select(Project))).all())
+    assert names == ["First"]

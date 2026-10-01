@@ -238,3 +238,61 @@ async def test_concurrent_set_default_leaves_exactly_one_default(
             )
         ).all()
         assert len(defaults) == 1 and defaults[0].name in {"A", "B"}
+
+
+async def test_create_with_is_default_flips_the_previous_default(
+    make_client: MakeClient, db: AsyncSession, settings: Settings
+) -> None:
+    _, admin = await _admin(make_client, db, settings)
+    previous_id = (await admin.get(URL)).json()[0]["id"]
+    created = await admin.post(
+        URL,
+        json={
+            "type": "localfs",
+            "name": "Archive",
+            "config": {"root_path": "archive"},
+            "is_default": True,
+        },
+    )
+    assert created.status_code == 201 and created.json()["is_default"] is True
+    rows = (await admin.get(URL)).json()
+    assert [r["name"] for r in rows if r["is_default"]] == ["Archive"]
+    entry = (
+        await db.scalars(
+            select(AuditLog).where(AuditLog.action == "storage_connection.default_changed")
+        )
+    ).one()
+    assert entry.target_id == created.json()["id"]
+    assert entry.details == {"previous_id": previous_id}
+
+
+async def test_patch_applies_the_default_move_and_the_update_in_one_transaction(
+    make_client: MakeClient, db: AsyncSession, settings: Settings
+) -> None:
+    """One route, one commit: a 409 from any part leaves the default where it was."""
+    _, admin = await _admin(make_client, db, settings)
+    archive = await make_connection(db, name="Archive", root_path="archive")
+
+    async def state() -> dict[str, dict[str, object]]:
+        return {r["name"]: r for r in (await admin.get(URL)).json()}
+
+    refused = await admin.patch(
+        f"{URL}/{archive.id}", json={"is_default": True, "is_active": False}
+    )
+    assert refused.status_code == 409
+    rows = await state()
+    assert rows["Local storage"]["is_default"] is True
+    assert rows["Archive"]["is_default"] is False and rows["Archive"]["is_active"] is True
+
+    taken = await admin.patch(
+        f"{URL}/{archive.id}", json={"is_default": True, "name": "Local storage"}
+    )
+    assert taken.status_code == 409
+    rows = await state()
+    assert rows["Local storage"]["is_default"] is True and rows["Archive"]["is_default"] is False
+    assert "storage_connection.default_changed" not in await _actions(db)
+
+    moved = await admin.patch(f"{URL}/{archive.id}", json={"is_default": True})
+    assert moved.status_code == 200 and moved.json()["is_default"] is True
+    rows = await state()
+    assert rows["Archive"]["is_default"] is True and rows["Local storage"]["is_default"] is False

@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
+from app.agent.analyzer import Analyzer, SkipAnalyzer
 from app.api.routes import auth, health, projects, users
 from app.api.routes import taxonomy as taxonomy_routes
 from app.core.config import Settings, get_settings
@@ -17,7 +18,7 @@ SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 CSRF_HEADER = "x-qc-agent"
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None, *, analyzer: Analyzer | None = None) -> FastAPI:
     app_settings = settings or get_settings()
     templates_dir = Path(app_settings.templates_dir) if app_settings.templates_dir else None
     taxonomy = load_taxonomy(templates_dir)  # validates the taxonomy at startup
@@ -39,6 +40,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = app_settings
     app.state.taxonomy = taxonomy
+    app.state.analyzer = analyzer or SkipAnalyzer()
     app.state.auth_limiter = SlidingWindowLimiter(
         limit=app_settings.rate_limit_auth_per_5min, window_seconds=300
     )

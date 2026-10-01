@@ -3,6 +3,7 @@ created (forced visibility for clients, version targets, early no-change rejecti
 
 import hashlib
 import uuid
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -272,3 +273,27 @@ async def test_confirm_type_version_must_keep_target_document_type(
     )
     assert item.status == "publishing"
     assert item.final_doc_type == "srs"
+
+
+async def test_batch_cap_counts_extracted_bytes_across_zips(tmp_path: Path) -> None:
+    # Deflated archives are tiny on the wire; the cap must apply to what they extract to.
+    entry = b"x" * 700 * 1024
+    first = make_zip(
+        tmp_path / "first.zip", {"a.md": entry, "b.md": entry}, compression=zipfile.ZIP_DEFLATED
+    )
+    second = make_zip(tmp_path / "second.zip", {"c.md": entry}, compression=zipfile.ZIP_DEFLATED)
+    staged, rejections = await stage_files(
+        [
+            IncomingFile("first.zip", bytes_reader(first.read_bytes())),
+            IncomingFile("second.zip", bytes_reader(second.read_bytes())),
+        ],
+        [UploadItemSpec(doc_type="glossary"), UploadItemSpec(doc_type="glossary")],
+        staging_dir=tmp_path / "staging" / "u1",
+        limits=LIMITS,
+    )
+    assert [s.file.name for s in staged] == ["a.md", "b.md"]
+    assert [(r.name, r.reason) for r in rejections] == [
+        ("c.md", "Upload batch exceeds the 2 MB limit.")
+    ]
+    items_dir = tmp_path / "staging" / "u1" / "items"
+    assert sorted(items_dir.iterdir()) == sorted(s.file.path for s in staged)

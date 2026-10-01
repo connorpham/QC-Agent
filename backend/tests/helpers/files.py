@@ -70,8 +70,9 @@ def make_zip(
     entries: dict[str, bytes],
     *,
     symlink: str | None = None,
+    compression: int = zipfile.ZIP_STORED,
 ) -> Path:
-    with zipfile.ZipFile(path, "w") as archive:
+    with zipfile.ZipFile(path, "w", compression=compression) as archive:
         for name, data in entries.items():
             archive.writestr(name, data)
         if symlink is not None:

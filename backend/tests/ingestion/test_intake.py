@@ -191,3 +191,12 @@ def test_invalid_zip(tmp_path: Path) -> None:
     assert files == [] and rejections == [
         type(rejections[0])("broken.zip", "File is not a valid zip archive.")
     ]
+
+
+def test_entry_whose_name_sanitises_to_no_extension_is_rejected(tmp_path: Path) -> None:
+    archive = make_zip(tmp_path / "odd.zip", {"docs/ .md": b"# Odd", "ok.md": b"# Ok"})
+    files, rejections = expand_zip(_staged(archive), tmp_path / "out", LIMITS)
+    assert [f.name for f in files] == ["ok.md"]
+    assert [(r.name, r.reason) for r in rejections] == [
+        ("docs/ .md", "Archive entry has no usable file name.")
+    ]

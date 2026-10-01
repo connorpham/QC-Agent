@@ -26,6 +26,7 @@ _EXTENSION_ALIASES = {"htm": "html"}
 _UNSAFE_CHARS = re.compile(r"[^\w .()\-]", re.UNICODE)
 _WHITESPACE = re.compile(r"\s+")
 _DRIVE_RE = re.compile(r"^[A-Za-z]:")
+UNUSABLE_ENTRY_NAME = "Archive entry has no usable file name."
 
 ReadChunk = Callable[[int], Awaitable[bytes]]
 
@@ -181,10 +182,13 @@ def _extract_entry(
 
 
 def expand_zip(
-    staged: StagedFile, dest_dir: Path, limits: IntakeLimits
+    staged: StagedFile, dest_dir: Path, limits: IntakeLimits, *, batch_budget: int | None = None
 ) -> tuple[list[StagedFile], list[Rejection]]:
     """Extract the safe entries of a zip into ``dest_dir``; every unsafe entry becomes a
-    rejection. Hidden entries (``__MACOSX``, dot files) are skipped silently."""
+    rejection. Hidden entries (``__MACOSX``, dot files) are skipped silently. ``batch_budget``
+    is what is left of the request's batch cap (default: the whole cap); extracted bytes beyond
+    it are rejected with the batch-limit reason."""
+    budget = limits.max_batch_bytes if batch_budget is None else batch_budget
     try:
         archive = zipfile.ZipFile(staged.path)
     except zipfile.BadZipFile:
@@ -208,10 +212,11 @@ def expand_zip(
             name = sanitize_filename(info.filename.replace("\\", "/").rsplit("/", 1)[-1])
             ext = file_extension(name)
             if ext is None:
+                rejections.append(Rejection(info.filename, UNUSABLE_ENTRY_NAME))
                 continue
             # The batch cap is enforced only against bytes actually extracted below: the zip's
             # declared ``file_size`` is attacker-controlled and is never trusted for accounting.
-            if total >= limits.max_batch_bytes:
+            if total >= budget:
                 rejections.append(Rejection(info.filename, batch_limit_reason(limits)))
                 continue
             dest = dest_dir / f"{uuid.uuid4().hex}.{ext}"
@@ -224,7 +229,7 @@ def expand_zip(
                 rejections.append(Rejection(info.filename, size_limit_reason(limits)))
                 continue
             size, sha256 = extracted
-            if total + size > limits.max_batch_bytes:
+            if total + size > budget:
                 dest.unlink(missing_ok=True)
                 rejections.append(Rejection(info.filename, batch_limit_reason(limits)))
                 continue

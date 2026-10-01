@@ -100,9 +100,17 @@ async def stage_files(
             await asyncio.to_thread(dest.unlink, missing_ok=True)
             rejections.append(Rejection(name, "Zip archives cannot be uploaded as a new version."))
             continue
+        # The archive's compressed size is replaced by what it extracts to, and extraction may
+        # use only what is left of the batch cap after the files before it.
+        total -= size
         entries, zip_rejections = await asyncio.to_thread(
-            expand_zip, file, staging_dir / "items", limits
+            expand_zip,
+            file,
+            staging_dir / "items",
+            limits,
+            batch_budget=limits.max_batch_bytes - total,
         )
+        total += sum(entry.size for entry in entries)
         rejections.extend(zip_rejections)
         entry_spec = spec.model_copy(update={"title": None})
         staged.extend(StagedItem(file=entry, spec=entry_spec) for entry in entries)

@@ -4,6 +4,7 @@ content is used."""
 import io
 import stat
 import zipfile
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import openpyxl
@@ -97,3 +98,18 @@ def docx_bytes(paragraphs: list[str]) -> bytes:
         document.add_paragraph(text)
     document.save(buffer)
     return buffer.getvalue()
+
+
+def bytes_reader(data: bytes) -> Callable[[int], Awaitable[bytes]]:
+    """Build an async chunked-reader over ``data``, mimicking ``UploadFile.read``: each call
+    returns up to ``size`` bytes and an empty ``bytes`` once exhausted."""
+    view = memoryview(data)
+    position = 0
+
+    async def read(size: int) -> bytes:
+        nonlocal position
+        chunk = bytes(view[position : position + size])
+        position += size
+        return chunk
+
+    return read

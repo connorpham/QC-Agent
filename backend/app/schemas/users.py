@@ -59,6 +59,15 @@ class UpdateUserRequest(BaseModel):
     is_active: bool | None = None
     is_admin: bool | None = None
 
+    @field_validator("display_name")
+    @classmethod
+    def _name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value.strip():
+            raise ValueError("Display name is required.")
+        return value.strip()
+
 
 class TemporaryPasswordResponse(BaseModel):
     temporary_password: str

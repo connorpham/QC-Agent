@@ -108,6 +108,17 @@ async def test_deactivate_revokes_sessions_and_blocks_login(
     assert (await old.get("/api/v1/auth/me")).status_code == 401
 
 
+async def test_blank_display_name_is_rejected(
+    make_client: MakeClient, db: AsyncSession, settings: Settings
+) -> None:
+    _, admin = await _admin_client(make_client, db, settings)
+    user = await make_user(db, settings, display_name="Original")
+    response = await admin.patch(f"/api/v1/users/{user.id}", json={"display_name": "   "})
+    assert response.status_code == 422
+    refreshed = await reload(db, User, user.id)
+    assert refreshed is not None and refreshed.display_name == "Original"
+
+
 async def test_admin_cannot_lock_themselves_out(
     make_client: MakeClient, db: AsyncSession, settings: Settings
 ) -> None:

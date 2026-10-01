@@ -1,8 +1,11 @@
 import json
 import uuid
-from typing import Annotated
+from collections.abc import Callable, Coroutine
+from typing import Annotated, Any
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse, Response
+from fastapi.routing import APIRoute
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -77,19 +80,46 @@ async def _upload_out(db: AsyncSession, upload: Upload, rejected: list[Rejection
     )
 
 
+def _unprocessable(message: str, rejected: list[Rejection]) -> HTTPException:
+    """Every 422 from the upload endpoint has the same shape."""
+    return HTTPException(
+        status_code=422,
+        detail={
+            "message": message,
+            "rejected": [{"name": r.name, "reason": r.reason} for r in rejected],
+        },
+    )
+
+
 def _parse_specs(items: str, count: int) -> list[UploadItemSpec]:
     try:
         specs = _SPECS.validate_python(json.loads(items))
     except (json.JSONDecodeError, ValidationError) as exc:
-        raise HTTPException(status_code=422, detail="The items part is not valid.") from exc
+        raise _unprocessable("The items part is not valid.", []) from exc
     if len(specs) != count:
-        raise HTTPException(
-            status_code=422, detail="The items part must have one entry per uploaded file."
-        )
+        raise _unprocessable("The items part must have one entry per uploaded file.", [])
     return specs
 
 
-@router.post("/projects/{project_id}/uploads", response_model=UploadOut, status_code=201)
+class _BodyCappedRoute(APIRoute):
+    """Refuses a request whose declared Content-Length exceeds the batch cap plus 1 MiB of
+    multipart overhead with 413, before FastAPI reads (and spools) the body. A request without
+    the header is left to the streaming limits in intake and the reverse proxy."""
+
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        handler = super().get_route_handler()
+
+        async def capped(request: Request) -> Response:
+            settings = request.app.state.settings
+            limit = (settings.max_upload_batch_mb + 1) * 1024 * 1024
+            declared = request.headers.get("content-length", "")
+            if declared.isdigit() and int(declared) > limit:
+                return JSONResponse({"detail": "Upload is too large."}, status_code=413)
+            return await handler(request)
+
+        return capped
+
+
 async def create_upload(
     ctx: Uploader,
     db: DbSession,
@@ -124,15 +154,19 @@ async def create_upload(
             staging_root=pipeline.staging_root,
         )
     except uploads_service.UploadError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "message": exc.message,
-                "rejected": [{"name": r.name, "reason": r.reason} for r in exc.rejections],
-            },
-        ) from exc
+        raise _unprocessable(exc.message, exc.rejections) from exc
     background.add_task(run_upload, pipeline, upload.id)
     return await _upload_out(db, upload, rejected)
+
+
+router.add_api_route(
+    "/projects/{project_id}/uploads",
+    create_upload,
+    methods=["POST"],
+    response_model=UploadOut,
+    status_code=201,
+    route_class_override=_BodyCappedRoute,
+)
 
 
 async def _upload_for(db: AsyncSession, upload_id: uuid.UUID, user: User) -> tuple[Upload, str]:

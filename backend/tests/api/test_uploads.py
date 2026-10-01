@@ -124,8 +124,15 @@ async def test_validation_of_items_part(
     editor = await _client(make_client, db, settings, users["editor"])
     url = f"/api/v1/projects/{project.id}/uploads"
     files = [("files", ("srs.docx", SRS, "application/octet-stream"))]
-    assert (await editor.post(url, files=files, data={"items": "not json"})).status_code == 422
-    assert (await editor.post(url, files=files, data={"items": "[]"})).status_code == 422
+    not_json = await editor.post(url, files=files, data={"items": "not json"})
+    assert not_json.status_code == 422
+    assert not_json.json()["detail"] == {"message": "The items part is not valid.", "rejected": []}
+    count = await editor.post(url, files=files, data={"items": "[]"})
+    assert count.status_code == 422
+    assert count.json()["detail"] == {
+        "message": "The items part must have one entry per uploaded file.",
+        "rejected": [],
+    }
     unknown = await editor.post(
         url, files=files, data={"items": json.dumps([{"doc_type": "poem"}])}
     )
@@ -212,3 +219,17 @@ async def test_retry_failed_item(
     assert (await editor.post(f"/api/v1/upload-items/{item['id']}/retry")).status_code == 200
     viewer = await _client(make_client, db, settings, users["viewer"])
     assert (await viewer.post(f"/api/v1/upload-items/{item['id']}/retry")).status_code == 403
+
+
+async def test_oversized_request_is_refused_before_the_body_is_read(
+    make_client: MakeClient, db: AsyncSession, settings: Settings, taxonomy: Taxonomy
+) -> None:
+    project, users = await _members(db, settings, taxonomy)
+    editor = await _client(make_client, db, settings, users["editor"])
+    url = f"/api/v1/projects/{project.id}/uploads"
+    payload = _multipart([("srs.docx", SRS)], [{"doc_type": "srs"}])
+    limit = (settings.max_upload_batch_mb + 1) * 1024 * 1024
+    forged = await editor.post(url, headers={"Content-Length": str(limit + 1)}, **payload)  # type: ignore[arg-type]
+    assert forged.status_code == 413
+    assert forged.json() == {"detail": "Upload is too large."}
+    assert (await db.scalars(select(AuditLog.action))).all().count("upload.created") == 0

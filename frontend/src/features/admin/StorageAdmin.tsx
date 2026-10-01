@@ -98,26 +98,18 @@ export function StorageAdmin() {
               const result = tests[connection.id];
               return (
                 <tr key={connection.id}>
-                  <Td>
-                    {connection.name}
-                    {connection.is_default ? (
-                      <>
-                        {" "}
-                        {/* aria-hidden: the "Default" tag is supplementary to the cell's accessible
-                            name (the connection name), which the row-lookup queries rely on; the
-                            badge is still visible to everyone. */}
-                        <span aria-hidden="true">
-                          <Badge tone="success">{m.storage.default}</Badge>
-                        </span>
-                      </>
-                    ) : null}
-                  </Td>
+                  <Td>{connection.name}</Td>
                   <Td>{m.storage.typeLabels[connection.type] ?? connection.type}</Td>
                   <Td className="font-mono">{String(connection.config.root_path ?? "")}</Td>
                   <Td>
-                    <Badge tone={connection.is_active ? "success" : "danger"}>
-                      {connection.is_active ? m.storage.active : m.storage.inactive}
-                    </Badge>
+                    <span className="flex flex-wrap items-center gap-1">
+                      <Badge tone={connection.is_active ? "success" : "danger"}>
+                        {connection.is_active ? m.storage.active : m.storage.inactive}
+                      </Badge>
+                      {connection.is_default ? (
+                        <Badge tone="success">{m.storage.default}</Badge>
+                      ) : null}
+                    </span>
                   </Td>
                   <Td>{connection.has_secret ? m.storage.hasSecret : m.storage.noSecret}</Td>
                   <Td>

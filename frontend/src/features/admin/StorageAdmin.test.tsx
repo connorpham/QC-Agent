@@ -39,7 +39,11 @@ it("lists connections, creates a localfs connection and tests it", async () => {
     },
   ]);
   render(<StorageAdmin />);
-  const localRow = (await screen.findByRole("cell", { name: "Local storage" })).closest("tr")!;
+  const localNameCell = await screen.findByRole("cell", { name: "Local storage" });
+  const localRow = localNameCell.closest("tr")!;
+  // The default indicator lives in the status cell, not the name cell, and must stay in the
+  // accessibility tree (not aria-hidden) so a screen-reader user hears that this is the default.
+  expect(within(localRow).getByRole("cell", { name: /Default/ })).toBeInTheDocument();
   expect(within(localRow).getByText("Default")).toBeInTheDocument();
   expect(within(localRow).queryByRole("button", { name: "Set as default" })).toBeNull();
   await userEvent.click(screen.getByRole("button", { name: "New connection" }));

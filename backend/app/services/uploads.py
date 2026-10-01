@@ -1,6 +1,7 @@
 """Upload intake into staging and the database, plus item actions (confirm type, retry)."""
 
 import asyncio
+import shutil
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -96,6 +97,7 @@ async def stage_files(
             staged.append(StagedItem(file=file, spec=spec))
             continue
         if spec.intent == "version":
+            await asyncio.to_thread(dest.unlink, missing_ok=True)
             rejections.append(Rejection(name, "Zip archives cannot be uploaded as a new version."))
             continue
         entries, zip_rejections = await asyncio.to_thread(
@@ -186,6 +188,9 @@ async def create_upload(
         accepted += 1
     if accepted == 0:
         await db.rollback()
+        await asyncio.to_thread(
+            shutil.rmtree, staging_dir_for(staging_root, upload_id), ignore_errors=True
+        )
         raise UploadError("No files were accepted.", all_rejections)
     await audit.record(
         db,

@@ -46,6 +46,18 @@ async def resolve_connection(
     return connection
 
 
+async def root_in_use(db: AsyncSession, connection_id: uuid.UUID, root: str) -> bool:
+    """True when any project, archived ones included (their files still exist), uses ``root``
+    on the connection."""
+    found = await db.scalar(
+        select(Project.id).where(
+            Project.storage.op("->>")("connection_id") == str(connection_id),
+            Project.storage.op("->>")("root") == root,
+        )
+    )
+    return found is not None
+
+
 async def create_project(
     db: AsyncSession,
     *,
@@ -78,6 +90,12 @@ async def create_project(
         validate_root_segment(root_folder)
     except StoragePathError as exc:
         raise ProjectValidationError(str(exc)) from exc
+    # Serialise on (connection, root) too: two different names may ask for the same folder.
+    await acquire_xact_lock(db, "project-root", f"{connection.id}:{root_folder}")
+    if await root_in_use(db, connection.id, root_folder):
+        raise ProjectValidationError(
+            "This root folder is already used by another project on the selected connection."
+        )
     project = Project(
         slug=slug,
         name=name,

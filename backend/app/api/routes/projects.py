@@ -113,6 +113,8 @@ async def create_project(
             creator=user,
             settings=settings,
             taxonomy=taxonomy,
+            connection_id=body.storage_connection_id,
+            root=body.storage_root,
         )
     except projects_service.ProjectValidationError as exc:
         raise HTTPException(status_code=422, detail=exc.message) from exc

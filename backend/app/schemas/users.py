@@ -71,3 +71,14 @@ class UpdateUserRequest(BaseModel):
 
 class TemporaryPasswordResponse(BaseModel):
     temporary_password: str
+
+
+class UserDirectoryEntry(BaseModel):
+    """What an internal user sees when picking project members."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    email: str
+    display_name: str
+    account_type: str

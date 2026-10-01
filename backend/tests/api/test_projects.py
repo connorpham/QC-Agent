@@ -1,4 +1,6 @@
+import uuid
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 
 from httpx import AsyncClient
 from sqlalchemy import select
@@ -6,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.db.models import AuditLog, Project, ProjectMember, User
-from tests.factories import make_session_token, make_user
+from tests.factories import make_connection, make_session_token, make_user
 
 MakeClient = Callable[..., Awaitable[AsyncClient]]
 
@@ -96,6 +98,7 @@ async def test_role_matrix(make_client: MakeClient, db: AsyncSession, settings: 
         assert response.status_code == 200, role
         assert response.json()["my_role"] == role
     assert (await ctx["client"].get(url)).json()["settings"] is None  # type: ignore[attr-defined]
+    assert (await ctx["client"].get(url)).json()["storage"] is None  # type: ignore[attr-defined]
     assert (await ctx["outsider"].get(url)).status_code == 404  # type: ignore[attr-defined]
     for role in ("editor", "viewer", "client"):
         response = await ctx[role].patch(url, json={"name": "Renamed"})  # type: ignore[attr-defined]
@@ -178,3 +181,94 @@ async def test_member_rules(make_client: MakeClient, db: AsyncSession, settings:
     assert final.status_code == 200
     assert {m["role"] for m in final.json()} == {"owner", "viewer"}
     assert (await ctx["client"].get(f"/api/v1/projects/{ctx['pid']}")).status_code == 404  # type: ignore[attr-defined]
+
+
+async def test_create_project_on_a_chosen_connection_with_a_custom_root(
+    make_client: MakeClient, db: AsyncSession, settings: Settings, storage_root: Path
+) -> None:
+    user = await make_user(db, settings)
+    archive = await make_connection(db, name="Archive", root_path="archive")
+    c = await _client_for(make_client, db, settings, user)
+    response = await c.post(
+        "/api/v1/projects",
+        json={
+            "name": "Customer Portal",
+            "storage_connection_id": str(archive.id),
+            "storage_root": "cp-2026",
+        },
+    )
+    assert response.status_code == 201
+    assert response.json()["storage"] == {
+        "connection_id": str(archive.id),
+        "connection_name": "Archive",
+        "type": "localfs",
+        "root": "cp-2026",
+    }
+    assert (storage_root / "archive" / "cp-2026" / "project.yaml").exists()
+    assert not (storage_root / "customer-portal").exists()
+
+
+async def test_create_project_defaults_to_the_default_connection_and_slug(
+    make_client: MakeClient, db: AsyncSession, settings: Settings, storage_root: Path
+) -> None:
+    user = await make_user(db, settings)
+    c = await _client_for(make_client, db, settings, user)
+    response = await c.post("/api/v1/projects", json={"name": "Plain", "storage_root": "  "})
+    assert response.status_code == 201
+    storage = response.json()["storage"]
+    assert storage["connection_name"] == "Local storage" and storage["root"] == "plain"
+    assert (storage_root / "plain" / "project.yaml").exists()
+
+
+async def test_unknown_or_inactive_connection_is_rejected(
+    make_client: MakeClient, db: AsyncSession, settings: Settings
+) -> None:
+    user = await make_user(db, settings)
+    c = await _client_for(make_client, db, settings, user)
+    unknown = await c.post(
+        "/api/v1/projects", json={"name": "X", "storage_connection_id": str(uuid.uuid4())}
+    )
+    assert unknown.status_code == 422
+    assert unknown.json()["detail"] == "Storage connection not found."
+    inactive = await make_connection(db, name="Old", root_path="old", is_active=False)
+    response = await c.post(
+        "/api/v1/projects", json={"name": "Y", "storage_connection_id": str(inactive.id)}
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Storage connection is not active."
+    assert (await db.scalars(select(Project))).all() == []
+
+
+async def test_invalid_root_folders_are_rejected(
+    make_client: MakeClient, db: AsyncSession, settings: Settings
+) -> None:
+    user = await make_user(db, settings)
+    c = await _client_for(make_client, db, settings, user)
+    for root in ("../x", "a/b", ".hidden", "x y", "/abs", "a" * 81, ".trash", "-dash"):
+        response = await c.post("/api/v1/projects", json={"name": "X", "storage_root": root})
+        assert response.status_code == 422, root
+    assert (await db.scalars(select(Project))).all() == []
+
+
+async def test_duplicate_root_on_same_connection_is_rejected(
+    make_client: MakeClient, db: AsyncSession, settings: Settings
+) -> None:
+    user = await make_user(db, settings)
+    archive = await make_connection(db, name="Archive", root_path="archive")
+    c = await _client_for(make_client, db, settings, user)
+    first = await c.post("/api/v1/projects", json={"name": "First", "storage_root": "shared"})
+    assert first.status_code == 201
+    second = await c.post("/api/v1/projects", json={"name": "Second", "storage_root": "shared"})
+    assert second.status_code == 422 and "already used" in second.json()["detail"]
+    # the same root on another connection is a different folder
+    elsewhere = await c.post(
+        "/api/v1/projects",
+        json={"name": "Third", "storage_connection_id": str(archive.id), "storage_root": "shared"},
+    )
+    assert elsewhere.status_code == 201
+    # a custom root equal to a project's default root (its slug) is refused as well
+    assert (await c.post("/api/v1/projects", json={"name": "Plain"})).status_code == 201
+    clash = await c.post("/api/v1/projects", json={"name": "Clash", "storage_root": "plain"})
+    assert clash.status_code == 422
+    names = sorted(p.name for p in (await db.scalars(select(Project))).all())
+    assert names == ["First", "Plain", "Third"]

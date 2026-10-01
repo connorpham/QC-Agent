@@ -3,13 +3,14 @@ import uuid
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
-from app.api.deps import AdminUser, DbSession
+from app.api.deps import AdminUser, CurrentUser, DbSession
 from app.db.models import User
 from app.schemas.users import (
     CreateUserRequest,
     CreateUserResponse,
     TemporaryPasswordResponse,
     UpdateUserRequest,
+    UserDirectoryEntry,
     UserOut,
 )
 from app.services import users as users_service
@@ -48,6 +49,19 @@ async def create_user(
             status_code=409, detail="A user with this e-mail already exists."
         ) from exc
     return CreateUserResponse(user=UserOut.model_validate(user), temporary_password=temporary)
+
+
+@router.get("/directory", response_model=list[UserDirectoryEntry])
+async def user_directory(user: CurrentUser, db: DbSession) -> list[UserDirectoryEntry]:
+    """Active users an internal user may add to a project; customers cannot browse users."""
+    if user.account_type != "internal":
+        raise HTTPException(status_code=403, detail="Only internal users can list users.")
+    users = (
+        await db.scalars(
+            select(User).where(User.is_active.is_(True)).order_by(User.display_name, User.email)
+        )
+    ).all()
+    return [UserDirectoryEntry.model_validate(u) for u in users]
 
 
 @router.patch("/{user_id}", response_model=UserOut)

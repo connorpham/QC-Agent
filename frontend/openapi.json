@@ -589,6 +589,30 @@
             "maxLength": 200,
             "title": "Name",
             "type": "string"
+          },
+          "storage_connection_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Storage Connection Id"
+          },
+          "storage_root": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Storage Root"
           }
         },
         "required": [
@@ -1188,6 +1212,36 @@
           "rejected"
         ],
         "title": "UploadOut",
+        "type": "object"
+      },
+      "UserDirectoryEntry": {
+        "description": "What an internal user sees when picking project members.",
+        "properties": {
+          "account_type": {
+            "title": "Account Type",
+            "type": "string"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "display_name",
+          "account_type"
+        ],
+        "title": "UserDirectoryEntry",
         "type": "object"
       },
       "UserOut": {
@@ -2678,6 +2732,32 @@
           }
         },
         "summary": "Create User",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/users/directory": {
+      "get": {
+        "description": "Active users an internal user may add to a project; customers cannot browse users.",
+        "operationId": "user_directory_api_v1_users_directory_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/UserDirectoryEntry"
+                  },
+                  "title": "Response User Directory Api V1 Users Directory Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "User Directory",
         "tags": [
           "users"
         ]

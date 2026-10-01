@@ -45,5 +45,10 @@ def generate_recovery_codes(count: int = 10) -> list[str]:
     return [f"{secrets.token_hex(4)}-{secrets.token_hex(4)}" for _ in range(count)]
 
 
+_RECOVERY_KEY_LABEL = b"qc-agent/recovery-codes"
+
+
 def hash_recovery_code(code: str, secret: str) -> str:
-    return hmac.new(secret.encode(), _normalize_recovery(code).encode(), hashlib.sha256).hexdigest()
+    # Derived sub-key so recovery-code hashes never share a key with session-token hashes.
+    key = hmac.new(secret.encode(), _RECOVERY_KEY_LABEL, hashlib.sha256).digest()
+    return hmac.new(key, _normalize_recovery(code).encode(), hashlib.sha256).hexdigest()

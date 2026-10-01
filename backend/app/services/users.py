@@ -1,6 +1,7 @@
 import uuid
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.emails import normalize_email
@@ -46,7 +47,11 @@ async def create_user(
         must_change_password=True,
     )
     db.add(user)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError as exc:  # a concurrent request created the same e-mail
+        await db.rollback()
+        raise DuplicateEmail(normalized) from exc
     await audit.record(
         db, "user.create", user_id=actor_id, target_type="user", target_id=str(user.id)
     )
@@ -111,6 +116,8 @@ async def reset_mfa(db: AsyncSession, user: User, *, actor_id: uuid.UUID) -> Non
     user.mfa_pending_secret_enc = None
     user.mfa_last_counter = None
     user.recovery_codes_hash = []
+    user.failed_logins = 0
+    user.locked_until = None
     await revoke_user_sessions(db, user.id)
     await audit.record(
         db, "user.reset_mfa", user_id=actor_id, target_type="user", target_id=str(user.id)

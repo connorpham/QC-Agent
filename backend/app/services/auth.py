@@ -54,20 +54,22 @@ async def authenticate(
     user = await db.scalar(select(User).where(User.email == normalize_email(email)))
     if user is None or not user.is_active:
         burn_password_check(password)
-        await audit.record(db, "auth.login_failed_unknown")
+        await audit.record(db, "auth.login_failed_unknown", details={"ip": ip})
         await db.commit()
         return None
     if is_locked(user, moment):
         burn_password_check(password)
-        await audit.record(db, "auth.login_blocked_locked", user_id=user.id)
+        await audit.record(db, "auth.login_blocked_locked", user_id=user.id, details={"ip": ip})
         await db.commit()
         return None
     if not verify_password(user.password_hash, password):
         locked = register_failure(user, settings, moment)
-        await audit.record(db, "auth.login_failed", user_id=user.id, details={"locked": locked})
+        await audit.record(
+            db, "auth.login_failed", user_id=user.id, details={"locked": locked, "ip": ip}
+        )
         await db.commit()
         return None
-    user.failed_logins = 0
+    # The failure counter is shared with MFA; only a completed second factor resets it.
     user.locked_until = None
     token = new_session_token()
     auth_session = AuthSession(

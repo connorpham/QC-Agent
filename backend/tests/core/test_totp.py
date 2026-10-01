@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 from datetime import UTC, datetime, timedelta
 
 import pyotp
@@ -63,3 +65,10 @@ def test_recovery_codes() -> None:
     assert hash_recovery_code(codes[0], secret) == hash_recovery_code(normalized_code, secret)
     assert hash_recovery_code(codes[0], secret) != hash_recovery_code(codes[0], new_totp_secret())
     assert is_recovery_code_format("123456") is False
+
+
+def test_recovery_code_hash_uses_a_derived_key() -> None:
+    secret = "a-session-secret-of-at-least-32-chars"
+    code = generate_recovery_codes(1)[0]
+    plain = hmac.new(secret.encode(), code.encode(), hashlib.sha256).hexdigest()
+    assert hash_recovery_code(code, secret) != plain

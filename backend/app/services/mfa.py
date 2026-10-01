@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 
+from sqlalchemy import Text, literal, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -12,6 +13,7 @@ from app.core.totp import (
     new_totp_secret,
     provisioning_uri,
 )
+from app.db.models import User
 from app.services import audit
 from app.services.auth import is_locked, register_failure
 from app.services.context import SessionContext
@@ -56,6 +58,36 @@ async def confirm_enrolment(
     return codes
 
 
+async def _consume_recovery_code(db: AsyncSession, user: User, hashed: str) -> bool:
+    """Atomically remove one recovery-code hash; False if it was absent (or already used)."""
+    column = User.__table__.c.recovery_codes_hash
+    consumed = await db.scalar(
+        update(User)
+        .where(User.id == user.id, column.has_key(hashed))
+        .values(recovery_codes_hash=column.op("-")(literal(hashed, Text)))
+        .returning(User.id)
+        .execution_options(synchronize_session=False)
+    )
+    await db.refresh(user)
+    return consumed is not None
+
+
+async def _advance_totp_counter(db: AsyncSession, user: User, counter: int) -> bool:
+    """Atomically record a used TOTP step; False if this or a later step was already used."""
+    advanced = await db.scalar(
+        update(User)
+        .where(
+            User.id == user.id,
+            or_(User.mfa_last_counter.is_(None), User.mfa_last_counter < counter),
+        )
+        .values(mfa_last_counter=counter)
+        .returning(User.id)
+        .execution_options(synchronize_session=False)
+    )
+    await db.refresh(user)
+    return advanced is not None
+
+
 async def verify_second_factor(
     db: AsyncSession,
     ctx: SessionContext,
@@ -74,17 +106,13 @@ async def verify_second_factor(
     ok = False
     if is_recovery_code_format(code):
         hashed = hash_recovery_code(code, settings.session_secret)
-        if hashed in user.recovery_codes_hash:
-            user.recovery_codes_hash = [h for h in user.recovery_codes_hash if h != hashed]
+        ok = await _consume_recovery_code(db, user, hashed)
+        if ok:
             await audit.record(db, "auth.recovery_code_used", user_id=user.id)
-            ok = True
     else:
         counter = match_totp(box.decrypt(user.mfa_secret_enc), code, now=moment)
-        if counter is not None and (
-            user.mfa_last_counter is None or counter > user.mfa_last_counter
-        ):
-            user.mfa_last_counter = counter
-            ok = True
+        if counter is not None:
+            ok = await _advance_totp_counter(db, user, counter)
     if ok:
         user.failed_logins = 0
         ctx.auth_session.mfa_verified = True

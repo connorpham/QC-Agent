@@ -123,3 +123,19 @@ async def test_five_bad_codes_lock_account_and_revoke_session(
     locked = await reload(db, User, user.id)
     assert locked is not None and locked.locked_until is not None
     assert locked.locked_until > datetime.now(UTC) + timedelta(minutes=10)
+
+
+async def test_correct_password_does_not_reset_mfa_failure_count(
+    client: AsyncClient, db: AsyncSession, settings: Settings
+) -> None:
+    user = await make_user(db, settings, mfa_secret=SECRET)
+    await _login(client)
+    valid = pyotp.TOTP(SECRET).now()
+    bad = "000000" if valid != "000000" else "111111"
+    for _ in range(4):
+        assert (await client.post("/api/v1/auth/mfa/verify", json={"code": bad})).status_code == 401
+    await _login(client)
+    assert (await client.post("/api/v1/auth/mfa/verify", json={"code": bad})).status_code == 401
+    assert (await client.get("/api/v1/auth/me")).status_code == 401
+    locked = await reload(db, User, user.id)
+    assert locked is not None and locked.locked_until is not None

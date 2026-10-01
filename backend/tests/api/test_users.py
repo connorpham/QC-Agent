@@ -1,4 +1,5 @@
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 
 from httpx import AsyncClient
 from sqlalchemy import select
@@ -141,6 +142,9 @@ async def test_cannot_promote_customer_to_admin(
 async def test_reset_mfa(make_client: MakeClient, db: AsyncSession, settings: Settings) -> None:
     _, admin = await _admin_client(make_client, db, settings)
     user = await make_user(db, settings, mfa_secret="JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP")
+    user.failed_logins = 3
+    user.locked_until = datetime.now(UTC) + timedelta(minutes=15)
+    await db.commit()
     old = await make_client(await make_session_token(db, settings, user))
     assert (await admin.post(f"/api/v1/users/{user.id}/reset-mfa")).status_code == 204
     assert (await old.get("/api/v1/auth/me")).status_code == 401
@@ -149,6 +153,8 @@ async def test_reset_mfa(make_client: MakeClient, db: AsyncSession, settings: Se
     assert refreshed.mfa_enabled is False
     assert refreshed.mfa_secret_enc is None
     assert refreshed.recovery_codes_hash == []
+    assert refreshed.failed_logins == 0
+    assert refreshed.locked_until is None
 
 
 async def test_unknown_user_is_404(

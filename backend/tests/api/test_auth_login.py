@@ -62,6 +62,7 @@ async def test_unknown_email_audits_without_leaking_the_email(
     assert row.action == "auth.login_failed_unknown"
     assert row.user_id is None
     assert "nobody@example.com" not in str(row.details)
+    assert row.details["ip"] == "127.0.0.1"
 
 
 async def test_lockout_after_five_failures(

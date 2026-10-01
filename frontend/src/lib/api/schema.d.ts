@@ -366,6 +366,78 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/storage-connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Connections */
+        get: operations["list_connections_api_v1_storage_connections_get"];
+        put?: never;
+        /** Create Connection */
+        post: operations["create_connection_api_v1_storage_connections_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/storage-connections/available": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Available Connections
+         * @description Active connections an internal user may pick for a new project, default first.
+         */
+        get: operations["available_connections_api_v1_storage_connections_available_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/storage-connections/{connection_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update Connection */
+        patch: operations["update_connection_api_v1_storage_connections__connection_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/storage-connections/{connection_id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Test Connection */
+        post: operations["test_connection_api_v1_storage_connections__connection_id__test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/taxonomy": {
         parameters: {
             query?: never;
@@ -446,6 +518,26 @@ export interface paths {
         put?: never;
         /** Create User */
         post: operations["create_user_api_v1_users_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/users/directory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * User Directory
+         * @description Active users an internal user may add to a project; customers cannot browse users.
+         */
+        get: operations["user_directory_api_v1_users_directory_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -747,6 +839,10 @@ export interface components {
             client_name?: string | null;
             /** Name */
             name: string;
+            /** Storage Connection Id */
+            storage_connection_id?: string | null;
+            /** Storage Root */
+            storage_root?: string | null;
         };
         /** ProjectOut */
         ProjectOut: {
@@ -832,6 +928,95 @@ export interface components {
             name: string;
             /** Reason */
             reason: string;
+        };
+        /** StorageConnectionAvailable */
+        StorageConnectionAvailable: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Is Default */
+            is_default: boolean;
+            /** Name */
+            name: string;
+            /** Type */
+            type: string;
+        };
+        /** StorageConnectionCreate */
+        StorageConnectionCreate: {
+            /** Config */
+            config?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Is Default
+             * @default false
+             */
+            is_default: boolean;
+            /** Name */
+            name: string;
+            /** Secret */
+            secret?: string | null;
+            /**
+             * Type
+             * @enum {string}
+             */
+            type: "localfs" | "sharepoint" | "gdrive";
+        };
+        /** StorageConnectionOut */
+        StorageConnectionOut: {
+            /** Config */
+            config: {
+                [key: string]: unknown;
+            };
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Has Secret */
+            has_secret: boolean;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Is Active */
+            is_active: boolean;
+            /** Is Default */
+            is_default: boolean;
+            /** Name */
+            name: string;
+            /** Type */
+            type: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** StorageConnectionUpdate */
+        StorageConnectionUpdate: {
+            /** Config */
+            config?: {
+                [key: string]: unknown;
+            } | null;
+            /** Is Active */
+            is_active?: boolean | null;
+            /** Is Default */
+            is_default?: boolean | null;
+            /** Name */
+            name?: string | null;
+            /** Secret */
+            secret?: string | null;
+        };
+        /** StorageTestResult */
+        StorageTestResult: {
+            /** Detail */
+            detail: string;
+            /** Ok */
+            ok: boolean;
         };
         /** TaskOut */
         TaskOut: {
@@ -954,6 +1139,23 @@ export interface components {
              * Format: uuid
              */
             uploaded_by: string;
+        };
+        /**
+         * UserDirectoryEntry
+         * @description What an internal user sees when picking project members.
+         */
+        UserDirectoryEntry: {
+            /** Account Type */
+            account_type: string;
+            /** Display Name */
+            display_name: string;
+            /** Email */
+            email: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
         };
         /** UserOut */
         UserOut: {
@@ -1791,6 +1993,145 @@ export interface operations {
             };
         };
     };
+    list_connections_api_v1_storage_connections_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StorageConnectionOut"][];
+                };
+            };
+        };
+    };
+    create_connection_api_v1_storage_connections_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StorageConnectionCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StorageConnectionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    available_connections_api_v1_storage_connections_available_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StorageConnectionAvailable"][];
+                };
+            };
+        };
+    };
+    update_connection_api_v1_storage_connections__connection_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StorageConnectionUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StorageConnectionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_connection_api_v1_storage_connections__connection_id__test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StorageTestResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_taxonomy_api_v1_taxonomy_get: {
         parameters: {
             query?: never;
@@ -1957,6 +2298,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    user_directory_api_v1_users_directory_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserDirectoryEntry"][];
                 };
             };
         };

@@ -1,6 +1,7 @@
+import hashlib
 import uuid
 
-from sqlalchemy import delete, select
+from sqlalchemy import BigInteger, delete, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -19,6 +20,15 @@ class MemberValidationError(Exception):
         self.message = message
 
 
+def advisory_key(namespace: str, value: str) -> int:
+    """Deterministic signed 64-bit key for ``pg_advisory_xact_lock``, stable across processes
+    (the lock key space is a plain bigint, so a namespace prefix keeps different lock uses from
+    colliding on the same hash)."""
+    digest = hashlib.sha256(f"{namespace}:{value}".encode()).digest()[:8]
+    unsigned = int.from_bytes(digest, "big")
+    return unsigned - 2**64 if unsigned >= 2**63 else unsigned
+
+
 async def create_project(
     db: AsyncSession,
     *,
@@ -30,8 +40,18 @@ async def create_project(
 ) -> Project:
     """Create the project, bind it to local storage under its slug and provision the workspace
     (folders, stubs, reports) before committing. A storage failure raises ``StorageError`` and
-    nothing is committed."""
+    nothing is committed.
+
+    Slug selection and provisioning run under a Postgres advisory transaction lock keyed by the
+    base slug, so two concurrent creations of the same name are serialised instead of racing to
+    provision the same storage root: the second call blocks until the first commits (or rolls
+    back), then sees the first's slug as taken and gets ``<base>-2``. The lock is released
+    automatically when the transaction ends.
+    """
     base = slugify(name)
+    await db.execute(
+        select(func.pg_advisory_xact_lock(literal(advisory_key("project-slug", base), BigInteger)))
+    )
     taken = set((await db.scalars(select(Project.slug).where(Project.slug.startswith(base)))).all())
     slug = unique_slug(base, taken)
     project = Project(

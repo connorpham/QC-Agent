@@ -1,20 +1,25 @@
 """Project creation provisions the workspace; the owner records the LLM data-processing
 confirmation; uploads stay blocked until then (checked in test_uploads)."""
 
+import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
+import pytest
 import yaml
 from httpx import AsyncClient
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
-from app.db.models import AuditLog, Document, DocumentVersion, Project
+from app.db.models import AuditLog, Document, DocumentVersion, Project, User
 from app.ingestion.naming import split_frontmatter
 from app.ingestion.taxonomy import Taxonomy
+from app.services.projects import create_project
 from app.services.workspace import ensure_workspace
+from app.storage.base import StorageError
+from app.storage.localfs import LocalFsBackend
 from app.storage.select import backend_for
 from tests.factories import add_member, make_project, make_session_token, make_user
 
@@ -97,3 +102,74 @@ async def test_owner_records_consent_once(
     assert shown["llm_consent"]["confirmed_by_name"] == "Tran Thi B"
     actions = (await db.scalars(select(AuditLog.action))).all()
     assert "project.llm_consent" in actions
+
+
+async def test_concurrent_project_creation_with_same_name_is_serialised(
+    db_sessionmaker: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    taxonomy: Taxonomy,
+    storage_root: Path,
+) -> None:
+    """Two requests creating a project with the same name race on the same base slug. The
+    advisory lock in ``create_project`` serialises them: the second sees the first's slug as
+    taken and provisions its own root under ``<base>-2`` instead of writing into the same
+    folder."""
+    async with db_sessionmaker() as setup:
+        owner = await make_user(setup, settings)
+        owner_id = owner.id
+
+    async with db_sessionmaker() as db_a, db_sessionmaker() as db_b:
+        owner_a = await db_a.get(User, owner_id)
+        owner_b = await db_b.get(User, owner_id)
+        assert owner_a is not None
+        assert owner_b is not None
+        project_a, project_b = await asyncio.gather(
+            create_project(
+                db_a,
+                name="Same Name",
+                client_name=None,
+                creator=owner_a,
+                settings=settings,
+                taxonomy=taxonomy,
+            ),
+            create_project(
+                db_b,
+                name="Same Name",
+                client_name=None,
+                creator=owner_b,
+                settings=settings,
+                taxonomy=taxonomy,
+            ),
+        )
+
+    assert {project_a.slug, project_b.slug} == {"same-name", "same-name-2"}
+    async with db_sessionmaker() as check:
+        for project in (project_a, project_b):
+            srs_text = (storage_root / project.slug / "02-requirements/srs.md").read_text()
+            data, _ = split_frontmatter(srs_text)
+            document = await check.scalar(
+                select(Document).where(
+                    Document.project_id == project.id, Document.doc_type == "srs"
+                )
+            )
+            assert document is not None
+            assert data["document_id"] == str(document.id)
+
+
+async def test_create_project_rolls_back_when_workspace_provisioning_fails(
+    make_client: MakeClient,
+    db: AsyncSession,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner = await make_user(db, settings)
+    c = await make_client(await make_session_token(db, settings, owner))
+
+    async def _boom(self: LocalFsBackend, path: str) -> None:
+        raise StorageError("Storage is unavailable.")
+
+    monkeypatch.setattr(LocalFsBackend, "ensure_folder", _boom)
+
+    response = await c.post("/api/v1/projects", json={"name": "Boom"})
+    assert response.status_code == 503
+    assert (await db.scalars(select(Project))).all() == []

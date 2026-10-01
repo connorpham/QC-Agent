@@ -50,3 +50,9 @@ Việc còn nợ, tạm dừng ngày 2026-10-01 để xử lý task khác. Đán
 - [ ] Plan 6: job dọn `auth_sessions` đã hết hạn hoặc bị thu hồi.
 - [ ] Plan 6: runbook ghi rõ xoay `SESSION_SECRET` sẽ làm mất hiệu lực mọi phiên và mã khôi phục MFA.
 - [x] Cập nhật Global Constraints của Plan 1: giới hạn auth mặc định 100 request mỗi 5 phút, khóa chỉ reset sau MFA thành công.
+- [ ] Plan 3: chính sách version cho gap report và `project.yaml` trên SharePoint/Drive (mỗi lần publish hiện tạo 3 version); bản gốc của file `.md` upload chỉ xem được qua lịch sử phiên bản.
+- [ ] Plan 6: giới hạn request body ở Caddy (`request_body` `max_size`).
+- [ ] Plan 6: requeue khi chạy nhiều worker (chỉ reset item quá thời gian chờ) hoặc giữ một worker.
+- [ ] Plan 6: test lifespan wiring (requeue khi khởi động, hủy task nền khi tắt).
+- [ ] Plan 6: xóa thư mục `mkdtemp` của test và ghi chú `QC_SKIP_DB`.
+- [ ] Ghi nhận: lần đầu publish của dự án cũ (chưa provision) tạo rồi xóa stub cho chính loại đang publish (vô hại).

@@ -1,0 +1,46 @@
+version: 1
+folders:
+  - id: overview
+    dir: 01-overview
+    stage: Why
+    doc_types:
+      - { id: readme,          title: Project README,  required: true,  template: readme.md }
+      - { id: project-charter, title: Project Charter, required: true,  template: project-charter.md }
+      - { id: glossary,        title: Glossary,        required: false, template: glossary.md }
+  - id: requirements
+    dir: 02-requirements
+    stage: What
+    doc_types:
+      - { id: brd,          title: Business Requirements Document,      required: true,  template: brd.md }
+      - { id: srs,          title: Software Requirements Specification, required: true,  template: srs.md }
+      - { id: use-cases,    title: Use Cases,    required: false, template: use-cases.md }
+      - { id: user-stories, title: User Stories, required: false, template: user-stories.md }
+  - id: design
+    dir: 03-design
+    stage: How
+    doc_types:
+      - { id: architecture-c4, title: Architecture (C4), required: true,  template: architecture-c4.md }
+      - { id: erd,             title: Entity Relationship Diagram, required: false, template: erd.md }
+      - { id: workflows,       title: Workflows, required: false, template: workflows.md }
+      - { id: api-spec,        title: API Specification, required: false, template: api-spec.md, normalize: false }
+  - id: source
+    dir: 04-source
+    stage: Build
+    doc_types:
+      - { id: repo-structure,     title: Repository Structure, required: true,  template: repo-structure.md, normalize: false }
+      - { id: coding-conventions, title: Coding Conventions,   required: false, template: coding-conventions.md }
+      - { id: adr,                title: Architecture Decision Record, required: false, template: adr.md, multi: true, subdir: adr }
+  - id: testing
+    dir: 05-testing
+    stage: Verify
+    doc_types:
+      - { id: test-plan,   title: Test Plan,   required: true,  template: test-plan.md }
+      - { id: test-cases,  title: Test Cases,  required: true,  template: test-cases.md, normalize: false }
+      - { id: test-report, title: Test Report, required: false, template: test-report.md, multi: true, subdir: test-reports }
+  - id: deployment
+    dir: 06-deployment
+    stage: Run
+    doc_types:
+      - { id: deploy-guide,  title: Deployment Guide, required: true,  template: deploy-guide.md }
+      - { id: runbook,       title: Runbook,          required: true,  template: runbook.md }
+      - { id: release-notes, title: Release Notes,    required: false, template: release-notes.md }

@@ -10,6 +10,7 @@ dependencies = [
     "fastapi>=0.142.2",
     "pydantic-settings>=2.15.0",
     "pyotp>=2.10.0",
+    "pyyaml>=6.0.3",
     "sqlalchemy[asyncio]>=2.1.1",
     "uvicorn[standard]>=0.54.0",
 ]
@@ -58,4 +59,5 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "ruff>=0.16.9",
+    "types-pyyaml>=6.0.12.20260906",
 ]

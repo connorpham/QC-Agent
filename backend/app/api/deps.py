@@ -14,6 +14,7 @@ from app.core.crypto import SecretBox
 from app.core.tokens import hash_token
 from app.db.models import AuthSession, Project, ProjectMember, User
 from app.db.session import get_session
+from app.ingestion.taxonomy import Taxonomy
 from app.services.context import SessionContext
 
 
@@ -24,6 +25,14 @@ def settings_dep(request: Request) -> Settings:
 
 AppSettings = Annotated[Settings, Depends(settings_dep)]
 DbSession = Annotated[AsyncSession, Depends(get_session)]
+
+
+def taxonomy_dep(request: Request) -> Taxonomy:
+    taxonomy: Taxonomy = request.app.state.taxonomy
+    return taxonomy
+
+
+TaxonomyDep = Annotated[Taxonomy, Depends(taxonomy_dep)]
 
 
 async def session_context(request: Request, db: DbSession, settings: AppSettings) -> SessionContext:

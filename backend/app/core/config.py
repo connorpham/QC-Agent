@@ -18,6 +18,12 @@ class Settings(BaseSettings):
     login_max_failures: int = 5
     lockout_minutes: int = 15
     rate_limit_auth_per_5min: int = 100
+    # Plan 2: templates, storage and upload limits
+    templates_dir: str | None = None  # default: <repository root>/templates
+    local_storage_root: str = "./workspace"
+    staging_root: str = "./staging"
+    max_upload_file_mb: int = Field(default=50, ge=1)
+    max_upload_batch_mb: int = Field(default=500, ge=1)
 
     @field_validator("secret_encryption_key")
     @classmethod

@@ -66,3 +66,4 @@ Việc còn nợ, tạm dừng ngày 2026-10-01 để xử lý task khác. Đán
 - [ ] Plan 3b: thêm index hàm trên `(storage->>'connection_id', lower(storage->>'root'))` khi số dự án tăng.
 - [ ] Quy ước backend: một route commit một lần; các service gọi liên tiếp dùng chung transaction.
 - [ ] Plan 5: `/auth/mfa/verify` trả 401 cho cả mã sai lẫn phiên hết hạn; đổi mã sai sang 400 để màn MFA phân biệt được mà không phải gọi thêm `/auth/me`.
+- [ ] Plan 3b/3c: PATCH kết nối lưu trữ ghi audit cả khi không có gì đổi; và không thể vừa kích hoạt vừa đặt mặc định trong một lần gọi (set_default chạy trước).

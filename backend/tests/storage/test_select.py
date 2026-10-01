@@ -49,3 +49,9 @@ def test_happy_path_returns_localfs_backend_rooted_under_local_storage_root(
     backend = backend_for(localfs_binding("acme-project"), settings)
     assert isinstance(backend, LocalFsBackend)
     assert backend.root == Path(settings.local_storage_root) / "acme-project"
+
+
+@pytest.mark.parametrize("root", ["../x", "/abs", "a/b", ".trash"])
+def test_root_must_be_a_single_safe_segment(tmp_path: Path, root: str) -> None:
+    with pytest.raises(StorageError):
+        backend_for({"type": LOCALFS, "root": root}, _settings(tmp_path))

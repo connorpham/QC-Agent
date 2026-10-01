@@ -11,7 +11,15 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Document, DocumentVersion, Project, Upload, UploadItem, User
+from app.db.models import (
+    Document,
+    DocumentVersion,
+    Project,
+    ProjectMember,
+    Upload,
+    UploadItem,
+    User,
+)
 from app.ingestion.intake import (
     IntakeLimits,
     ReadChunk,
@@ -241,19 +249,25 @@ async def published_document_ids(
 
 
 async def my_tasks(db: AsyncSession, user: User) -> list[tuple[UploadItem, Project]]:
-    rows = (
-        await db.execute(
-            select(UploadItem, Project)
-            .join(Upload, Upload.id == UploadItem.upload_id)
-            .join(Project, Project.id == Upload.project_id)
-            .where(
-                Upload.uploaded_by == user.id,
-                UploadItem.status == "needs_confirmation",
-                Project.archived_at.is_(None),
-            )
-            .order_by(UploadItem.updated_at)
+    """The user's own items waiting for a type confirmation, in live projects they still belong
+    to (administrators act as owners everywhere, so membership is not required for them)."""
+    stmt = (
+        select(UploadItem, Project)
+        .join(Upload, Upload.id == UploadItem.upload_id)
+        .join(Project, Project.id == Upload.project_id)
+        .where(
+            Upload.uploaded_by == user.id,
+            UploadItem.status == "needs_confirmation",
+            Project.archived_at.is_(None),
         )
-    ).all()
+        .order_by(UploadItem.updated_at)
+    )
+    if not user.is_admin:
+        stmt = stmt.join(
+            ProjectMember,
+            (ProjectMember.project_id == Project.id) & (ProjectMember.user_id == user.id),
+        )
+    rows = (await db.execute(stmt)).all()
     return [(item, project) for item, project in rows]
 
 

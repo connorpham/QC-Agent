@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import Settings
-from app.storage.base import StorageBackend, StorageError
+from app.storage.base import StorageBackend, StorageError, StoragePathError, normalize_path
 from app.storage.localfs import LocalFsBackend
 
 LOCALFS = "localfs"
@@ -21,5 +21,8 @@ def backend_for(storage: Mapping[str, Any], settings: Settings) -> StorageBacken
         root = storage.get("root")
         if not isinstance(root, str) or not root:
             raise StorageError("Project storage binding is incomplete.")
-        return LocalFsBackend(Path(settings.local_storage_root) / root)
+        segment = normalize_path(root)  # rejects "..", absolute paths and reserved names
+        if "/" in segment:
+            raise StoragePathError("Project storage root must be a single folder name.")
+        return LocalFsBackend(Path(settings.local_storage_root) / segment)
     raise StorageError(f"Storage type {kind!r} is not available in this deployment.")

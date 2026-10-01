@@ -35,6 +35,12 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 pythonpath = ["."]
+filterwarnings = [
+    # PyMuPDF's SWIG bindings on Python 3.12; nothing to fix on our side
+    "ignore:builtin type swigvarlink has no __module__ attribute:DeprecationWarning",
+    "ignore:builtin type SwigPyPacked has no __module__ attribute:DeprecationWarning",
+    "ignore:builtin type SwigPyObject has no __module__ attribute:DeprecationWarning",
+]
 
 [tool.ruff]
 line-length = 100

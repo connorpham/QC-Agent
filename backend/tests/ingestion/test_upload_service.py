@@ -7,11 +7,12 @@ import zipfile
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent.fake import FakeAnalyzer, ScriptedVerdict
 from app.core.config import Settings
-from app.db.models import Document, DocumentVersion, Upload, UploadItem
+from app.db.models import Document, DocumentVersion, ProjectMember, Upload, UploadItem
 from app.ingestion.intake import IntakeLimits
 from app.ingestion.taxonomy import Taxonomy
 from app.schemas.uploads import UploadItemSpec
@@ -21,11 +22,13 @@ from app.services.uploads import (
     UploadError,
     confirm_type,
     create_upload,
+    my_tasks,
     stage_files,
     staging_dir_for,
 )
-from tests.factories import make_project, make_user
+from tests.factories import add_member, make_project, make_user
 from tests.helpers.files import bytes_reader, docx_bytes, make_zip
+from tests.helpers.ingest import ingest
 
 LIMITS = IntakeLimits.from_megabytes(1, 2)
 SRS = docx_bytes(["The system shall allow users to log in."])
@@ -301,3 +304,38 @@ async def test_batch_cap_counts_extracted_bytes_across_zips(tmp_path: Path) -> N
     ]
     items_dir = tmp_path / "staging" / "u1" / "items"
     assert sorted(items_dir.iterdir()) == sorted(s.file.path for s in staged)
+
+
+async def test_my_tasks_only_lists_projects_the_user_still_belongs_to(
+    db: AsyncSession, settings: Settings, taxonomy: Taxonomy
+) -> None:
+    owner = await make_user(db, settings)
+    editor = await make_user(db, settings, email="editor@example.com")
+    project = await make_project(db, settings, taxonomy, owner=owner, name="Demo")
+    await add_member(db, project, editor, "editor")
+    fake = FakeAnalyzer({"srs.docx": ScriptedVerdict("mismatch", "Looks like a plan.", None)})
+    for uploader, role in ((editor, "editor"), (owner, "owner")):
+        await db.refresh(uploader)
+        await ingest(
+            db,
+            settings,
+            taxonomy,
+            project=project,
+            uploader=uploader,
+            role=role,
+            files=[("srs.docx", SRS)],
+            specs=[UploadItemSpec(doc_type="srs")],
+            analyzer=fake,
+        )
+    await db.refresh(editor)  # each commit expires loaded users
+    assert len(await my_tasks(db, editor)) == 1
+    await db.execute(delete(ProjectMember).where(ProjectMember.user_id == editor.id))
+    await db.commit()
+    await db.refresh(editor)
+    assert await my_tasks(db, editor) == []
+    # the owner, made an administrator without a membership, still sees their own task
+    await db.execute(delete(ProjectMember).where(ProjectMember.user_id == owner.id))
+    owner.is_admin = True
+    await db.commit()
+    await db.refresh(owner)
+    assert [item.original_name for item, _ in await my_tasks(db, owner)] == ["srs.docx"]

@@ -8,6 +8,8 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Identity,
+    Index,
     Integer,
     String,
     Text,
@@ -29,6 +31,8 @@ ITEM_STATUSES = (
     "failed",
 )
 TERMINAL_STATUSES = ("published", "failed")
+ACTIVE_STATUSES = ("uploaded", "converting", "checking", "publishing")  # work in progress
+ITEM_STATUS_EVENT = "item.status"
 INTENTS = ("new", "version")
 VISIBILITIES = ("internal", "shared")
 TYPE_CHECKS = ("match", "mismatch_kept", "mismatch_changed", "skipped")
@@ -142,4 +146,21 @@ class DocumentVersion(Base):
     upload_item_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("upload_items.id", ondelete="SET NULL"), unique=True
     )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class UploadEvent(Base):
+    """One row per upload-item state change (spec 10 ``events``), written in the same
+    transaction as the change; ``id`` is the Server-Sent Events id and ``Last-Event-ID``."""
+
+    __tablename__ = "events"
+    __table_args__ = (Index("ix_events_upload_id_id", "upload_id", "id"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    upload_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("uploads.id", ondelete="CASCADE"))
+    item_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("upload_items.id", ondelete="SET NULL")
+    )
+    type: Mapped[str] = mapped_column(String(40))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

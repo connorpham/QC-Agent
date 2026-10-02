@@ -1,5 +1,5 @@
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,6 +11,7 @@ from app.db.models import (
     ProjectMember,
     StorageConnection,
     Upload,
+    UploadEvent,
     UploadItem,
     User,
 )
@@ -214,3 +215,44 @@ async def test_document_version_unique_per_document(db: AsyncSession) -> None:
         )
     with pytest.raises(IntegrityError):
         await db.commit()
+
+
+async def test_event_ids_are_monotonic_and_payload_round_trips(db: AsyncSession) -> None:
+    user = _user()
+    db.add(user)
+    await db.flush()
+    project = Project(slug="demo", name="Demo", created_by=user.id)
+    db.add(project)
+    await db.flush()
+    upload = Upload(project_id=project.id, uploaded_by=user.id)
+    db.add(upload)
+    await db.flush()
+    first = UploadEvent(upload_id=upload.id, type="item.status", payload={"status": "converting"})
+    second = UploadEvent(upload_id=upload.id, type="item.status", payload={"status": "checking"})
+    db.add_all([first, second])
+    await db.commit()
+    assert isinstance(first.id, int) and second.id > first.id
+    rows = (
+        await db.scalars(
+            select(UploadEvent).where(UploadEvent.upload_id == upload.id).order_by(UploadEvent.id)
+        )
+    ).all()
+    assert [r.payload["status"] for r in rows] == ["converting", "checking"]
+    assert rows[0].item_id is None and rows[0].created_at is not None
+
+
+async def test_events_are_deleted_with_their_upload(db: AsyncSession) -> None:
+    user = _user()
+    db.add(user)
+    await db.flush()
+    project = Project(slug="demo", name="Demo", created_by=user.id)
+    db.add(project)
+    await db.flush()
+    upload = Upload(project_id=project.id, uploaded_by=user.id)
+    db.add(upload)
+    await db.flush()
+    db.add(UploadEvent(upload_id=upload.id, type="item.status", payload={}))
+    await db.commit()
+    await db.delete(upload)
+    await db.commit()
+    assert (await db.scalar(select(func.count()).select_from(UploadEvent))) == 0

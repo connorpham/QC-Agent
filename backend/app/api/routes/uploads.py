@@ -3,8 +3,17 @@ import uuid
 from collections.abc import Callable, Coroutine
 from typing import Annotated, Any
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse, Response
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    UploadFile,
+)
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.routing import APIRoute
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +28,7 @@ from app.api.deps import (
     resolve_role,
 )
 from app.db.models import Project, Upload, UploadItem, User
+from app.db.session import get_sessionmaker
 from app.ingestion.intake import IntakeLimits, Rejection
 from app.schemas.uploads import (
     ConfirmTypeRequest,
@@ -28,6 +38,7 @@ from app.schemas.uploads import (
     UploadItemSpec,
     UploadOut,
 )
+from app.services import events as events_service
 from app.services import uploads as uploads_service
 from app.services.consent import has_consent
 from app.services.pipeline import publish_confirmed_item, run_upload
@@ -182,6 +193,39 @@ async def _upload_for(db: AsyncSession, upload_id: uuid.UUID, user: User) -> tup
 async def get_upload(upload_id: uuid.UUID, user: CurrentUser, db: DbSession) -> UploadOut:
     upload, _ = await _upload_for(db, upload_id, user)
     return await _upload_out(db, upload, [])
+
+
+@router.get(
+    "/uploads/{upload_id}/events",
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "description": "Server-Sent Events: the current `item.status` of every item, then "
+            "`item.status` frames with an `id:`, `: ping` comments, then `upload.settled`.",
+            "content": {"text/event-stream": {"schema": {"type": "string"}}},
+        }
+    },
+)
+async def upload_events(
+    upload_id: uuid.UUID,
+    user: CurrentUser,
+    db: DbSession,
+    last_event_id: Annotated[str | None, Header()] = None,
+) -> StreamingResponse:
+    await _upload_for(db, upload_id, user)
+    # The dependency's session is closed only after the response finishes (FastAPI runs the
+    # exit of yield dependencies after the stream ends); release it now so a listener never
+    # pins a pooled connection. The generator opens its own short session per poll.
+    await db.close()
+    return StreamingResponse(
+        events_service.stream_upload_events(
+            get_sessionmaker(),
+            upload_id,
+            last_event_id=events_service.parse_last_event_id(last_event_id),
+        ),
+        media_type="text/event-stream",
+        headers=events_service.SSE_HEADERS,
+    )
 
 
 @router.get("/me/tasks", response_model=list[TaskOut])

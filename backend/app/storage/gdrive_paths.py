@@ -118,10 +118,12 @@ class DriveResolver:
             self._client,
             lambda: self._client.build_request("GET", FILES_URL, params=params, headers=headers),
             policy=DRIVE_POLICY,
-            context=f"Looking up {name!r} in Google Drive",
+            context=f"Looking up an item in Google Drive (drive {self._drive_id})",
             sleep=self._sleep,
         )
-        raise_for_storage(response, context=f"Looking up {name!r} in Google Drive")
+        raise_for_storage(
+            response, context=f"Looking up an item in Google Drive (drive {self._drive_id})"
+        )
         files = response.json().get("files", [])
         if len(files) > 1:
             raise StorageAmbiguousPath(
@@ -174,10 +176,12 @@ class DriveResolver:
                 headers=headers,
             ),
             policy=DRIVE_POLICY,
-            context=f"Creating folder {name!r} in Google Drive",
+            context=f"Creating a folder in Google Drive (drive {self._drive_id})",
             sleep=self._sleep,
         )
-        raise_for_storage(response, context=f"Creating folder {name!r} in Google Drive")
+        raise_for_storage(
+            response, context=f"Creating a folder in Google Drive (drive {self._drive_id})"
+        )
         created: str = response.json()["id"]
         return created
 

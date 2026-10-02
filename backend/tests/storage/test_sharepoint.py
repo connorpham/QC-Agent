@@ -1,5 +1,7 @@
 """SharePoint adapter over Microsoft Graph. Scripted transport only; no network, no tenant."""
 
+import logging
+
 import httpx
 import pytest
 
@@ -273,6 +275,27 @@ async def test_missing_file_and_version_raise_not_found() -> None:
     with pytest.raises(StorageNotFound):
         await backend.move_to_trash(PATH)
     assert await backend.exists(PATH) is False
+
+
+# -- logging never names a document (finding 9) ----------------------------------------------
+
+
+async def test_a_failed_upload_is_logged_without_the_documents_path(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The retry layer logs this context string on every failure. The project's own rule (stated
+    in the pipeline module) is that logs carry identifiers and error classes only - a warning
+    must not record a customer's document name or path."""
+    script = Script()  # every request falls through to the default itemNotFound 404
+    backend = _backend(script)
+    with caplog.at_level(logging.WARNING), pytest.raises(StorageError):
+        await backend.put_file(PATH, b"v1", "text/plain")
+    messages = [r.getMessage() for r in caplog.records]
+    assert messages
+    assert not any(PATH in m for m in messages)
+    assert not any("srs--customer-portal" in m for m in messages)
+    assert any("Uploading" in m for m in messages)  # the operation is still identified
+    assert any(DRIVE_ID in m for m in messages)  # and so is the connection
 
 
 # -- unexpected response shapes (finding 8) ------------------------------------------------

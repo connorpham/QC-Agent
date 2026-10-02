@@ -2,6 +2,7 @@
 Every test runs against a scripted transport; nothing here reaches the network."""
 
 import json
+import logging
 
 import httpx
 import pytest
@@ -661,6 +662,29 @@ async def test_health_message_never_contains_a_token_or_a_provider_body() -> Non
     status = await _backend(script).health()
     assert status.ok is False
     assert "test-token" not in status.detail and "Bearer" not in status.detail
+
+
+# -- logging never names a document (finding 9) ----------------------------------------------
+
+
+async def test_a_failed_upload_is_logged_without_the_documents_path(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The retry layer logs this context string on every failure. The project's own rule (stated
+    in the pipeline module) is that logs carry identifiers and error classes only - a warning
+    must not record a customer's document name or path."""
+    flat_path = "srs--customer-portal.docx"  # no subfolder: skips folder creation entirely,
+    # exercising put_file's own upload context rather than gdrive_paths.py's folder lookup
+    script = Script().on("GET https://www.googleapis.com/drive/v3/files?", _list([]))
+    backend = _backend(script)  # the unmatched create POST falls through to a plain 404
+    with caplog.at_level(logging.WARNING), pytest.raises(StorageError):
+        await backend.put_file(flat_path, b"v1", "application/octet-stream")
+    messages = [r.getMessage() for r in caplog.records]
+    assert messages  # the failure was logged at all
+    assert not any(flat_path in m for m in messages)
+    assert not any("srs--customer-portal" in m for m in messages)
+    assert any("Uploading" in m for m in messages)  # the operation is still identified
+    assert any(DRIVE_ID in m for m in messages)  # and so is the connection
 
 
 # -- unexpected response shapes (finding 8) ------------------------------------------------

@@ -215,7 +215,7 @@ class SharePointBackend:
                 if prefix
                 else f"{self._drive}/root/children"
             )
-            context = f"Creating folder {'/'.join(walked)}"
+            context = f"Creating a folder (drive {self._drive_id})"
             response = await self._send(
                 "POST",
                 target,
@@ -231,8 +231,8 @@ class SharePointBackend:
             raise_for_storage(response, context=context)
 
     async def put_file(self, path: str, data: bytes, content_type: str) -> StoredFile:
-        relative = normalize_path(path)
-        context = f"Uploading {relative}"
+        normalize_path(path)  # validated here too, before any decision about which upload to use
+        context = f"Uploading a file (drive {self._drive_id})"
         if len(data) <= SIMPLE_UPLOAD_LIMIT:
             response = await self._send(
                 "PUT",
@@ -291,7 +291,7 @@ class SharePointBackend:
 
     async def get_file(self, path: str) -> bytes:
         relative = normalize_path(path)
-        context = f"Downloading {relative}"
+        context = f"Downloading a file (drive {self._drive_id})"
         response = await self._send("GET", f"{self._address(path)}/content", context=context)
         if response.status_code in (301, 302, 303, 307):
             location = required_header(response, "Location", context=context)
@@ -302,7 +302,7 @@ class SharePointBackend:
         return response.content
 
     async def exists(self, path: str) -> bool:
-        context = f"Checking {normalize_path(path)}"
+        context = f"Checking a file (drive {self._drive_id})"
         response = await self._send(
             "GET", f"{self._address(path)}?$select=id,folder", context=context
         )
@@ -316,7 +316,7 @@ class SharePointBackend:
         # "turn this path into an item id" lookup here (or in get_version, move_to_trash):
         # that would be an extra request per call for no benefit. Do not re-add one.
         relative = normalize_path(path)
-        context = f"Listing versions of {relative}"
+        context = f"Listing versions (drive {self._drive_id})"
         response = await self._send("GET", f"{self._address(path)}/versions", context=context)
         if response.status_code == 404:
             raise StorageNotFound(f"File not found: {relative}")
@@ -343,8 +343,8 @@ class SharePointBackend:
         return versions
 
     async def get_version(self, path: str, version_id: str) -> bytes:
-        relative = normalize_path(path)
-        context = f"Downloading a version of {relative}"
+        normalize_path(path)
+        context = f"Downloading a version (drive {self._drive_id})"
         response = await self._send(
             "GET",
             f"{self._address(path)}/versions/{quote(version_id, safe='')}/content",
@@ -360,7 +360,7 @@ class SharePointBackend:
 
     async def move_to_trash(self, path: str) -> None:
         relative = normalize_path(path)
-        context = f"Removing {relative}"
+        context = f"Removing a file (drive {self._drive_id})"
         response = await self._send("DELETE", self._address(path), context=context)
         if response.status_code == 404:
             raise StorageNotFound(f"File not found: {relative}")

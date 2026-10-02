@@ -228,7 +228,7 @@ class GoogleDriveBackend:
             await self._resolver.ensure_folder(folder, root_id=root_id) if folder else root_id
         )
         existing = await self._resolver.find_child(parent_id, name)
-        context = f"Uploading {relative}"
+        context = f"Uploading a file (drive {self._drive_id})"
         if len(data) <= MULTIPART_LIMIT:
             file = await self._upload_multipart(
                 existing, parent_id, name, data, content_type, context
@@ -356,7 +356,7 @@ class GoogleDriveBackend:
     async def get_file(self, path: str) -> bytes:
         relative = normalize_path(path)
         entry = await self._resolver.resolve(relative, root_id=await self._root(create=False))
-        context = f"Downloading {relative}"
+        context = f"Downloading a file (drive {self._drive_id})"
         response = await self._send(
             "GET",
             f"{API}/files/{entry.id}",
@@ -378,7 +378,7 @@ class GoogleDriveBackend:
     async def list_versions(self, path: str) -> list[StoredVersion]:
         relative = normalize_path(path)
         entry = await self._resolver.resolve(relative, root_id=await self._root(create=False))
-        context = f"Listing versions of {relative}"
+        context = f"Listing versions (drive {self._drive_id})"
         response = await self._send(
             "GET",
             f"{API}/files/{entry.id}/revisions",
@@ -415,7 +415,7 @@ class GoogleDriveBackend:
     async def get_version(self, path: str, version_id: str) -> bytes:
         relative = normalize_path(path)
         entry = await self._resolver.resolve(relative, root_id=await self._root(create=False))
-        context = f"Downloading a version of {relative}"
+        context = f"Downloading a version (drive {self._drive_id})"
         response = await self._send(
             "GET",
             f"{API}/files/{entry.id}/revisions/{version_id}",
@@ -430,7 +430,7 @@ class GoogleDriveBackend:
     async def move_to_trash(self, path: str) -> None:
         relative = normalize_path(path)
         entry = await self._resolver.resolve(relative, root_id=await self._root(create=False))
-        context = f"Removing {relative}"
+        context = f"Removing a file (drive {self._drive_id})"
         response = await self._send(
             "PATCH",
             f"{API}/files/{entry.id}",

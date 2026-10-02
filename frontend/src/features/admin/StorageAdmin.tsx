@@ -10,10 +10,11 @@ import { api } from "@/lib/api/client";
 import { apiErrorMessage, unwrap } from "@/lib/api/errors";
 import { useLoad } from "@/lib/hooks/useLoad";
 import { m } from "@/messages";
+import { connectionSummary, fieldLabel } from "./connectionTypes";
 import { ConnectionDialog } from "./ConnectionDialog";
 import type { Connection } from "./types";
 
-type TestState = { ok: boolean; detail: string } | "running";
+type TestState = { ok: boolean; detail: string; field?: string | null } | "running";
 
 export function StorageAdmin() {
   const connections = useLoad(
@@ -87,7 +88,7 @@ export function StorageAdmin() {
             <tr>
               <Th>{m.storage.name}</Th>
               <Th>{m.storage.type}</Th>
-              <Th>{m.storage.rootPath}</Th>
+              <Th>{m.storage.location}</Th>
               <Th>{m.storage.active}</Th>
               <Th>{m.storage.secret}</Th>
               <Th>{m.common.actions}</Th>
@@ -100,7 +101,7 @@ export function StorageAdmin() {
                 <tr key={connection.id}>
                   <Td>{connection.name}</Td>
                   <Td>{m.storage.typeLabels[connection.type] ?? connection.type}</Td>
-                  <Td className="font-mono">{String(connection.config.root_path ?? "")}</Td>
+                  <Td className="font-mono">{connectionSummary(connection)}</Td>
                   <Td>
                     <span className="flex flex-wrap items-center gap-1">
                       <Badge tone={connection.is_active ? "success" : "danger"}>
@@ -148,7 +149,10 @@ export function StorageAdmin() {
                         <span role="status" className={result.ok ? "text-success" : "text-danger"}>
                           {result.ok
                             ? m.storage.testOk
-                            : `${m.storage.testFailed}: ${result.detail}`}
+                            : m.storage.testFailedWith(
+                                fieldLabel(connection.type, result.field),
+                                result.detail,
+                              )}
                         </span>
                       ) : null}
                     </span>

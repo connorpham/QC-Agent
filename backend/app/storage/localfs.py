@@ -163,5 +163,9 @@ class LocalFsBackend:
     async def move_to_trash(self, path: str) -> None:
         await asyncio.to_thread(self._move_to_trash_sync, path)
 
-    async def health(self) -> HealthStatus:
+    async def health(self, *, probe_write: bool = False) -> HealthStatus:
+        # ``probe_write`` is accepted for symmetry with the SharePoint/Google Drive adapters,
+        # whose public-vs-admin split it mirrors. It is ignored here: this writes a throwaway
+        # file to our own local disk, not a customer's cloud document library, so there is no
+        # outbound request and nothing shows up in anyone's audit trail either way.
         return await asyncio.to_thread(self._health_sync)

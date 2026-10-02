@@ -1280,6 +1280,17 @@
             "title": "Detail",
             "type": "string"
           },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
           "ok": {
             "title": "Ok",
             "type": "boolean"

@@ -5,7 +5,7 @@ import logging
 import uuid
 from typing import Any
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,9 +14,10 @@ from app.core.config import Settings
 from app.core.crypto import SecretBox
 from app.db.locks import acquire_xact_lock
 from app.db.models import Project, StorageConnection, User
-from app.schemas.storage import LocalFsConfig
+from app.schemas.storage import GDriveConfig, LocalFsConfig, SharePointConfig
 from app.services import audit
 from app.storage.base import HealthStatus, StorageError
+from app.storage.gdrive import SHARED_CACHE, validate_service_account_key
 from app.storage.select import connection_backend, localfs_root
 
 logger = logging.getLogger(__name__)
@@ -25,7 +26,17 @@ logger = logging.getLogger(__name__)
 # rename the connection in databases that already ran that migration.
 DEFAULT_CONNECTION_NAME = "Local storage"
 DEFAULT_ROOT_PATH = "."
-ACCEPTED_TYPES = ("localfs",)
+ACCEPTED_TYPES = ("localfs", "sharepoint", "gdrive")
+SECRET_REQUIRED_TYPES = ("sharepoint", "gdrive")
+SECRET_LABELS = {
+    "sharepoint": "A client secret is required for a SharePoint connection.",
+    "gdrive": "A service-account key is required for a Google Drive connection.",
+}
+CONFIG_MODELS: dict[str, type[BaseModel]] = {
+    "localfs": LocalFsConfig,
+    "sharepoint": SharePointConfig,
+    "gdrive": GDriveConfig,
+}
 
 
 async def list_connections(db: AsyncSession) -> list[StorageConnection]:
@@ -104,14 +115,28 @@ def validate_config(type_: str, config: dict[str, Any], settings: Settings) -> d
     if type_ not in ACCEPTED_TYPES:
         raise StorageConnectionError(f"Storage type {type_!r} is not available in this version.")
     try:
-        parsed = LocalFsConfig.model_validate(config)
+        parsed = CONFIG_MODELS[type_].model_validate(config)
     except ValidationError as exc:
         raise StorageConnectionError("; ".join(str(e["msg"]) for e in exc.errors())) from exc
-    try:
-        localfs_root(parsed.root_path, settings)
-    except StorageError as exc:
-        raise StorageConnectionError(str(exc)) from exc
+    if isinstance(parsed, LocalFsConfig):
+        try:
+            localfs_root(parsed.root_path, settings)
+        except StorageError as exc:
+            raise StorageConnectionError(str(exc)) from exc
     return parsed.model_dump()
+
+
+def require_secret(type_: str, secret: str | None) -> None:
+    """A cloud connection without a usable secret cannot work; refuse it at the form."""
+    if type_ not in SECRET_REQUIRED_TYPES:
+        return
+    if not secret:
+        raise StorageConnectionError(SECRET_LABELS[type_])
+    if type_ == "gdrive":
+        try:
+            validate_service_account_key(secret)
+        except StorageError as exc:
+            raise StorageConnectionError(str(exc)) from exc
 
 
 async def _name_taken(db: AsyncSession, name: str, *, exclude: uuid.UUID | None = None) -> bool:
@@ -148,6 +173,7 @@ async def create_connection(
     settings: Settings,
 ) -> StorageConnection:
     clean_config = validate_config(type_, config, settings)
+    require_secret(type_, secret)
     if await _name_taken(db, name):
         raise StorageConnectionConflict(NAME_TAKEN)
     connection = StorageConnection(
@@ -226,7 +252,16 @@ async def update_connection(
     if config is not None:
         connection.config = validate_config(connection.type, config, settings)
         changes["config"] = True
+        # Any cached Google Drive folder id was resolved against the configuration this
+        # connection had before - most importantly, the Shared Drive id. ``FolderCache`` scopes
+        # its keys by connection id (see ``GoogleDriveBackend``), so dropping every entry under
+        # this connection's id forces the next publish to resolve fresh against whatever the
+        # connection now points at, instead of risking a stale id from before the change
+        # (finding 1). This is a no-op for a connection of any other type: nothing is ever
+        # cached under its id in the first place.
+        SHARED_CACHE.invalidate_scope(str(connection.id))
     if secret is not None:
+        require_secret(connection.type, secret)
         connection.secret_enc = box.encrypt(secret)
         changes["secret"] = True
     if is_active is not None and is_active != connection.is_active:
@@ -249,6 +284,10 @@ async def update_connection(
     except IntegrityError as exc:
         await db.rollback()
         raise StorageConnectionConflict(NAME_TAKEN) from exc
+    if not changes:
+        if commit:
+            await db.commit()
+        return connection
     await audit.record(
         db,
         "storage_connection.updated",
@@ -289,9 +328,14 @@ async def set_default(
 async def test_connection(
     db: AsyncSession, connection: StorageConnection, *, actor: User, settings: Settings
 ) -> HealthStatus:
-    """Run the adapter's health check for the connection root; audited either way."""
+    """Run the adapter's full health check for the connection root; audited either way.
+
+    ``probe_write=True``: a human administrator asked for this and is waiting for the answer,
+    so the full staged probe runs, including SharePoint's versioning write-probe. The public,
+    unauthenticated ``/health`` summary never does this (see ``app.services.storage_health``).
+    """
     try:
-        status = await connection_backend(connection, settings).health()
+        status = await connection_backend(connection, settings).health(probe_write=True)
     except StorageError as exc:
         status = HealthStatus(ok=False, detail=str(exc))
     await audit.record(
@@ -300,7 +344,7 @@ async def test_connection(
         user_id=actor.id,
         target_type="storage_connection",
         target_id=str(connection.id),
-        details={"ok": status.ok, "detail": status.detail},
+        details={"ok": status.ok, "detail": status.detail, "field": status.field},
     )
     await db.commit()
     return status

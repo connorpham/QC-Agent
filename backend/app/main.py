@@ -23,6 +23,7 @@ from app.db.session import dispose_engine, get_sessionmaker, init_engine, is_ini
 from app.ingestion.taxonomy import load_taxonomy
 from app.services.pipeline import PipelineContext, cancel_background, requeue_stale_items
 from app.services.storage_connections import ensure_default_connection
+from app.storage.http import aclose_client
 
 API_PREFIX = "/api/v1"
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
@@ -49,6 +50,7 @@ def create_app(settings: Settings | None = None, *, analyzer: Analyzer | None = 
             logger.info("Re-queued %d upload items left in progress", requeued)
         yield
         await cancel_background()  # requeued work must not outlive the engine
+        await aclose_client()  # the shared storage HTTP client
         await dispose_engine()
 
     app = FastAPI(

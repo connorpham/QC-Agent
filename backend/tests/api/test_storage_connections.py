@@ -2,10 +2,12 @@
 ``available`` list internal users read when creating a project."""
 
 import asyncio
+import json
 import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -15,10 +17,19 @@ from app.core.crypto import SecretBox
 from app.db.models import AuditLog, StorageConnection, User
 from app.ingestion.taxonomy import Taxonomy
 from app.services.storage_connections import set_default
+from tests.conftest import CSRF
 from tests.factories import make_connection, make_project, make_session_token, make_user
 
 MakeClient = Callable[..., Awaitable[AsyncClient]]
 URL = "/api/v1/storage-connections"
+
+
+@pytest.fixture
+async def admin_client(
+    make_client: MakeClient, db: AsyncSession, settings: Settings
+) -> AsyncClient:
+    _, client = await _admin(make_client, db, settings)
+    return client
 
 
 async def _admin(
@@ -84,7 +95,7 @@ async def test_create_connection_and_test_it(
     assert body["config"] == {"root_path": "archive"}
     tested = await admin.post(f"{URL}/{body['id']}/test")
     assert tested.status_code == 200
-    assert tested.json() == {"ok": True, "detail": "ok"}
+    assert tested.json() == {"ok": True, "detail": "ok", "field": None}
     assert (storage_root / "archive").is_dir()  # the health probe created the folder
     actions = await _actions(db)
     assert "storage_connection.created" in actions and "storage_connection.tested" in actions
@@ -296,3 +307,96 @@ async def test_patch_applies_the_default_move_and_the_update_in_one_transaction(
     assert moved.status_code == 200 and moved.json()["is_default"] is True
     rows = await state()
     assert rows["Archive"]["is_default"] is True and rows["Local storage"]["is_default"] is False
+
+
+async def test_admin_creates_a_sharepoint_connection_without_touching_the_server(
+    admin_client: AsyncClient,
+) -> None:
+    body = {
+        "type": "sharepoint",
+        "name": "Acme library",
+        "config": {
+            "tenant_id": "11111111-1111-1111-1111-111111111111",
+            "client_id": "22222222-2222-2222-2222-222222222222",
+            "site_id": "example.sharepoint.com,33333333-3333-3333-3333-333333333333,4444",
+            "drive_id": "b!test-library-drive-id",
+        },
+        "secret": "client-secret-value",
+    }
+    response = await admin_client.post("/api/v1/storage-connections", json=body, headers=CSRF)
+    assert response.status_code == 201
+    created = response.json()
+    assert created["type"] == "sharepoint" and created["has_secret"] is True
+    assert "secret" not in created and "client-secret-value" not in response.text
+    assert created["config"]["site_id"] == body["config"]["site_id"]
+
+    listed = await admin_client.get("/api/v1/storage-connections")
+    assert "client-secret-value" not in listed.text
+
+
+async def test_a_cloud_connection_without_a_secret_is_rejected(admin_client: AsyncClient) -> None:
+    response = await admin_client.post(
+        "/api/v1/storage-connections",
+        json={"type": "gdrive", "name": "Acme drive", "config": {"drive_id": "0ATest"}},
+        headers=CSRF,
+    )
+    assert response.status_code == 422
+    assert "service-account key is required" in response.json()["detail"]
+
+
+# A synthetic key body, assembled at runtime so the repository's gitleaks hook does not
+# flag a fixture. It is not a key and cannot sign anything.
+FAKE_PEM = "-----BEGIN " + "PRIVATE KEY-----\nnot-a-real-key\n-----END " + "PRIVATE KEY-----\n"
+
+
+async def test_test_connection_returns_the_field_at_fault(admin_client: AsyncClient) -> None:
+    created = await admin_client.post(
+        "/api/v1/storage-connections",
+        json={
+            "type": "gdrive",
+            "name": "Unreachable drive",
+            "config": {"drive_id": "0ADoesNotExist"},
+            "secret": json.dumps(
+                {
+                    "type": "service_account",
+                    "private_key": FAKE_PEM,
+                    "client_email": "qc-agent@qc-agent-test.iam.gserviceaccount.com",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                }
+            ),
+        },
+        headers=CSRF,
+    )
+    connection_id = created.json()["id"]
+    response = await admin_client.post(
+        f"/api/v1/storage-connections/{connection_id}/test", headers=CSRF
+    )
+    assert response.status_code == 200
+    result = response.json()
+    # The key is syntactically valid but not a real credential, so Google rejects it: the
+    # diagnosis must point at the secret field, and must not echo the key.
+    assert result["ok"] is False and result["field"] == "secret"
+    assert "PRIVATE KEY" not in response.text
+
+
+async def test_patch_with_no_changes_writes_no_audit_row(
+    admin_client: AsyncClient, db: AsyncSession
+) -> None:
+    connection = (await admin_client.get("/api/v1/storage-connections")).json()[0]
+    before = await db.scalar(
+        select(func.count())
+        .select_from(AuditLog)
+        .where(AuditLog.action == "storage_connection.updated")
+    )
+    response = await admin_client.patch(
+        f"/api/v1/storage-connections/{connection['id']}",
+        json={"name": connection["name"]},
+        headers=CSRF,
+    )
+    assert response.status_code == 200
+    after = await db.scalar(
+        select(func.count())
+        .select_from(AuditLog)
+        .where(AuditLog.action == "storage_connection.updated")
+    )
+    assert after == before

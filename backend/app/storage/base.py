@@ -26,6 +26,14 @@ class StorageNotFound(StorageError):
     """The file or version does not exist."""
 
 
+class StorageAuthError(StorageError):
+    """The storage credentials were rejected, expired or lack permission (spec 8.6)."""
+
+
+class StorageAmbiguousPath(StorageError):
+    """Two items share a name where the path interface assumes one (Google Drive, spec 8.3)."""
+
+
 @dataclass(frozen=True)
 class StoredFile:
     item_id: str
@@ -44,6 +52,7 @@ class StoredVersion:
 class HealthStatus:
     ok: bool
     detail: str = ""
+    field: str | None = None  # the connection field at fault, for Test connection (spec 8.5)
 
 
 def normalize_path(path: str) -> str:
@@ -91,4 +100,4 @@ class StorageBackend(Protocol):
 
     async def move_to_trash(self, path: str) -> None: ...
 
-    async def health(self) -> HealthStatus: ...
+    async def health(self, *, probe_write: bool = False) -> HealthStatus: ...

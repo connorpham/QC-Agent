@@ -1,5 +1,7 @@
 from app.storage.base import (
     HealthStatus,
+    StorageAmbiguousPath,
+    StorageAuthError,
     StorageBackend,
     StorageError,
     StorageNotFound,
@@ -11,6 +13,8 @@ from app.storage.base import (
 
 __all__ = [
     "HealthStatus",
+    "StorageAmbiguousPath",
+    "StorageAuthError",
     "StorageBackend",
     "StorageError",
     "StorageNotFound",

@@ -1,0 +1,544 @@
+"""SharePoint / OneDrive adapter on Microsoft Graph (spec 8.2).
+
+App-only client credentials through ``msal``, permission ``Sites.Selected``. All projects share
+one site and each customer has its own document library, so a connection carries one site id and
+one drive id and every data-path request addresses ``/drives/{drive_id}/`` and nothing else.
+"""
+
+import asyncio
+import logging
+from collections.abc import Awaitable, Callable
+from time import monotonic
+from typing import Any
+from urllib.parse import quote
+
+import httpx
+
+from app.storage.base import (
+    HealthStatus,
+    StorageAuthError,
+    StorageError,
+    StorageNotFound,
+    StoredFile,
+    StoredVersion,
+    normalize_path,
+)
+from app.storage.http import TokenProvider, get_client
+from app.storage.responses import parsed_json, parsed_timestamp, required_header, required_str
+from app.storage.retry import GRAPH_POLICY, raise_for_storage, send_with_retry
+
+logger = logging.getLogger(__name__)
+
+GRAPH = "https://graph.microsoft.com/v1.0"
+SCOPES = ["https://graph.microsoft.com/.default"]
+SIMPLE_UPLOAD_LIMIT = 4 * 1024 * 1024
+CHUNK_BYTES = 5 * 320 * 1024  # Graph requires a multiple of 320 KiB
+HEALTH_PROBE_NAME = ".qc-agent-health.txt"
+PROBE_CACHE_SECONDS = 600.0
+# The configuration schema already restricts a site id and a drive id to this same character set
+# (app.schemas.storage._SAFE_ID_RE), but both are interpolated straight into a URL path here, so
+# they are quoted again at the point of use rather than trusting that validation was the only way
+# either value could ever arrive (finding 7). Characters in this set pass through unescaped;
+# every one of them is a character the site id and drive id formats actually use (SharePoint's
+# comma-separated site id, its "b!..." drive id); anything else - most importantly "/" - is
+# percent-encoded so it can never be read as a path separator.
+ID_SAFE_CHARS = ",.:!_-"
+
+# Field tokens returned on ``HealthStatus.field``. These are diagnosis codes, not strictly the
+# connection's own column names: "library not found" and "library belongs to another site" are
+# both ultimately about the drive id, but they are different faults with different fixes, so
+# they get different codes. Each stage below has exactly one of these, and no two stages share
+# one (see test_health_every_stage_reports_a_distinct_field).
+FIELD_SECRET = "secret"  # noqa: S105 - a diagnosis-code label, not a credential
+FIELD_SITE_ID = "site_id"
+FIELD_DRIVE_ID = "drive_id"
+FIELD_DRIVE_GRANT = "drive_id_no_grant"
+FIELD_DRIVE_WRONG_SITE = "drive_id_wrong_site"
+FIELD_WRITE_GRANT = "write_grant"
+FIELD_VERSIONING = "versioning"
+
+CREDENTIALS_REJECTED = (
+    "The Microsoft 365 credentials were rejected or have expired. Check the tenant id, client "
+    "id and client secret, and whether the secret has expired in Entra ID."
+)
+SITE_NOT_FOUND = "SharePoint site not found. Check the site id."
+NO_GRANT = (
+    "No access to this site. A Microsoft 365 administrator must grant this application write "
+    "access to the site (Sites.Selected)."
+)
+NO_WRITE = (
+    "This application can read the site but cannot write to it. The Sites.Selected grant must "
+    "be write, not read."
+)
+LIBRARY_NOT_FOUND = "Document library not found. Check the document library (drive) id."
+# A site shared by every customer means the natural next action on "check the library id" is to
+# paste a different one - and every other library on that site belongs to another customer. A 403
+# here means the application can be denied this specific library despite already having access to
+# the site, which is a grant to fix, never a reason to retype the one field that separates
+# customers (finding 6).
+LIBRARY_NO_GRANT = (
+    "This application cannot access this document library, even though it can see the site. A "
+    "Microsoft 365 administrator must grant access to this specific library."
+)
+WRONG_SITE = (
+    "This document library does not belong to the site above. Check the document library "
+    "(drive) id."
+)
+VERSIONING_OFF = (
+    "Version history appears to be disabled on this document library. Turn versioning on in "
+    "the library settings, otherwise document history cannot be kept."
+)
+
+
+class GraphTokenProvider:
+    """App-only Graph token through msal, cached by msal itself.
+
+    ``msal`` is synchronous, so acquisition runs in a worker thread. The client secret and the
+    token never leave this object.
+    """
+
+    def __init__(self, tenant_id: str, client_id: str, client_secret: str) -> None:
+        self._tenant_id = tenant_id
+        self._client_id = client_id
+        self._client_secret = client_secret
+        self._app: Any | None = None
+        self._lock = asyncio.Lock()
+
+    def _acquire(self) -> str:
+        import msal  # imported late so the dependency is optional at import time
+
+        if self._app is None:
+            self._app = msal.ConfidentialClientApplication(
+                self._client_id,
+                authority=f"https://login.microsoftonline.com/{self._tenant_id}",
+                client_credential=self._client_secret,
+            )
+        result = self._app.acquire_token_for_client(scopes=SCOPES)
+        token = result.get("access_token") if isinstance(result, dict) else None
+        if not token:
+            # result["error_description"] can contain request identifiers; log the code only.
+            code = result.get("error") if isinstance(result, dict) else "unknown"
+            logger.warning("Graph token request failed: %s", code)
+            raise StorageAuthError(CREDENTIALS_REJECTED)
+        return str(token)
+
+    async def token(self) -> str:
+        async with self._lock:
+            try:
+                return await asyncio.to_thread(self._acquire)
+            except StorageError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - msal raises several transport types
+                logger.warning("Graph token request failed: %s", type(exc).__name__)
+                raise StorageAuthError(CREDENTIALS_REJECTED) from None
+
+
+class SharePointBackend:
+    def __init__(
+        self,
+        site_id: str,
+        drive_id: str,
+        root_path: str,
+        tokens: TokenProvider,
+        *,
+        client: httpx.AsyncClient | None = None,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
+        self._site_id = site_id
+        self._drive_id = drive_id
+        self._root_path = root_path.strip("/")
+        self._tokens = tokens
+        self._client = client or get_client()
+        self._sleep = sleep
+        self._probe: dict[bool, tuple[HealthStatus, float]] = {}
+
+    # -- plumbing --------------------------------------------------------------------------
+
+    @property
+    def _drive(self) -> str:
+        return f"{GRAPH}/drives/{quote(self._drive_id, safe=ID_SAFE_CHARS)}"
+
+    def _address(self, path: str) -> str:
+        """``/drives/{id}/root:/{project root}/{path}:`` with every segment URL-encoded."""
+        relative = normalize_path(path)
+        full = f"{self._root_path}/{relative}" if self._root_path else relative
+        return f"{self._drive}/root:/{quote(full, safe='/')}:"
+
+    async def _send(
+        self,
+        method: str,
+        url: str,
+        *,
+        context: str,
+        log_context: str | None = None,
+        auth_raises: bool = True,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        headers = {
+            "Authorization": f"Bearer {await self._tokens.token()}",
+            **kwargs.pop("headers", {}),
+        }
+        return await send_with_retry(
+            self._client,
+            lambda: self._client.build_request(method, url, headers=headers, **kwargs),
+            policy=GRAPH_POLICY,
+            context=context,
+            log_context=log_context,
+            sleep=self._sleep,
+            raise_on_auth_error=auth_raises,
+        )
+
+    async def _newest_version_id(self, item_id: str, context: str, log_context: str) -> str:
+        response = await self._send(
+            "GET",
+            f"{self._drive}/items/{item_id}/versions?$top=1",
+            context=context,
+            log_context=log_context,
+        )
+        raise_for_storage(response, context=context, log_context=log_context)
+        values = parsed_json(response, context=context).get("value", [])
+        if not values:
+            return ""
+        first = values[0]
+        if not isinstance(first, dict):
+            raise StorageError(
+                f"{context} failed: the storage service returned an unexpected response."
+            )
+        return required_str(first, "id", context=context)
+
+    # -- StorageBackend --------------------------------------------------------------------
+
+    async def ensure_folder(self, path: str) -> None:
+        relative = normalize_path(path)
+        walked: list[str] = []
+        for name in relative.split("/"):
+            parent = "/".join(walked)
+            walked.append(name)
+            prefix = f"{self._root_path}/{parent}" if self._root_path else parent
+            target = (
+                f"{self._drive}/root:/{quote(prefix, safe='/')}:/children"
+                if prefix
+                else f"{self._drive}/root/children"
+            )
+            # ``context`` reaches a raised StorageError's message, which a client can read back
+            # through an upload item's ``error`` field - it must never carry the drive (document
+            # library) id, which on a site shared by every customer identifies one customer's
+            # library specifically. ``log_context`` may, for the log line only (wave 2 of
+            # finding 9).
+            context = "Creating a folder"
+            log_context = f"{context} (drive {self._drive_id})"
+            response = await self._send(
+                "POST",
+                target,
+                context=context,
+                log_context=log_context,
+                json={
+                    "name": name,
+                    "folder": {},
+                    "@microsoft.graph.conflictBehavior": "fail",
+                },
+            )
+            if response.status_code == 409:
+                continue  # already there, which is what ensure_folder promises
+            raise_for_storage(response, context=context, log_context=log_context)
+
+    async def put_file(self, path: str, data: bytes, content_type: str) -> StoredFile:
+        normalize_path(path)  # validated here too, before any decision about which upload to use
+        context = "Uploading a file"
+        log_context = f"{context} (drive {self._drive_id})"
+        if len(data) <= SIMPLE_UPLOAD_LIMIT:
+            response = await self._send(
+                "PUT",
+                f"{self._address(path)}/content",
+                context=context,
+                log_context=log_context,
+                content=data,
+                headers={"Content-Type": content_type},
+            )
+            raise_for_storage(response, context=context, log_context=log_context)
+            item = parsed_json(response, context=context)
+        else:
+            item = await self._upload_session(path, data, context, log_context)
+        item_id = required_str(item, "id", context=context)
+        version_id = await self._newest_version_id(item_id, context, log_context)
+        return StoredFile(item_id=item_id, version_id=version_id, web_url=item.get("webUrl"))
+
+    async def _upload_session(
+        self, path: str, data: bytes, context: str, log_context: str
+    ) -> dict[str, Any]:
+        start = await self._send(
+            "POST",
+            f"{self._address(path)}/createUploadSession",
+            context=context,
+            log_context=log_context,
+            json={"item": {"@microsoft.graph.conflictBehavior": "replace"}},
+        )
+        raise_for_storage(start, context=context, log_context=log_context)
+        upload_url = required_str(parsed_json(start, context=context), "uploadUrl", context=context)
+        total = len(data)
+        last: httpx.Response | None = None
+        for offset in range(0, total, CHUNK_BYTES):
+            chunk = data[offset : offset + CHUNK_BYTES]
+            end = offset + len(chunk) - 1
+            # The upload URL carries its own authorisation; sending the bearer token here is
+            # both unnecessary and a way to leak it to a storage host.
+            last = await send_with_retry(
+                self._client,
+                lambda chunk=chunk, offset=offset, end=end: self._client.build_request(  # type: ignore[misc]
+                    "PUT",
+                    upload_url,
+                    content=chunk,
+                    headers={"Content-Range": f"bytes {offset}-{end}/{total}"},
+                ),
+                policy=GRAPH_POLICY,
+                context=context,
+                log_context=log_context,
+                sleep=self._sleep,
+            )
+            raise_for_storage(last, context=context, log_context=log_context)
+        if last is None:
+            raise StorageError(f"{context} failed: nothing to upload.")
+        if last.status_code not in (200, 201):
+            # A 202 (or any other non-complete 2xx) here means Graph has not yet committed the
+            # item after the final chunk - itself the unexpected case, not a status this adapter
+            # can usefully continue from, and its body is not a completed item either (finding 8).
+            raise StorageError(
+                f"{context} failed: the storage service returned an unexpected response."
+            )
+        return parsed_json(last, context=context)
+
+    async def get_file(self, path: str) -> bytes:
+        relative = normalize_path(path)
+        context = "Downloading a file"
+        log_context = f"{context} (drive {self._drive_id})"
+        response = await self._send(
+            "GET", f"{self._address(path)}/content", context=context, log_context=log_context
+        )
+        if response.status_code in (301, 302, 303, 307):
+            location = required_header(response, "Location", context=context)
+            response = await self._client.get(location)
+        if response.status_code == 404:
+            raise StorageNotFound(f"File not found: {relative}")
+        raise_for_storage(response, context=context, log_context=log_context)
+        return response.content
+
+    async def exists(self, path: str) -> bool:
+        context = "Checking a file"
+        log_context = f"{context} (drive {self._drive_id})"
+        response = await self._send(
+            "GET",
+            f"{self._address(path)}?$select=id,folder",
+            context=context,
+            log_context=log_context,
+        )
+        if response.status_code == 404:
+            return False
+        raise_for_storage(response, context=context, log_context=log_context)
+        return "folder" not in parsed_json(response, context=context)
+
+    async def list_versions(self, path: str) -> list[StoredVersion]:
+        # Graph accepts path addressing on /versions directly, so there is no separate
+        # "turn this path into an item id" lookup here (or in get_version, move_to_trash):
+        # that would be an extra request per call for no benefit. Do not re-add one.
+        relative = normalize_path(path)
+        context = "Listing versions"
+        log_context = f"{context} (drive {self._drive_id})"
+        response = await self._send(
+            "GET", f"{self._address(path)}/versions", context=context, log_context=log_context
+        )
+        if response.status_code == 404:
+            raise StorageNotFound(f"File not found: {relative}")
+        raise_for_storage(response, context=context, log_context=log_context)
+        values = parsed_json(response, context=context).get("value", [])
+        if not isinstance(values, list):
+            raise StorageError(
+                f"{context} failed: the storage service returned an unexpected response."
+            )
+        for v in values:
+            if not isinstance(v, dict):
+                raise StorageError(
+                    f"{context} failed: the storage service returned an unexpected response."
+                )
+        versions = [
+            StoredVersion(
+                version_id=required_str(v, "id", context=context),
+                size=int(v.get("size", 0)),
+                modified_at=parsed_timestamp(v.get("lastModifiedDateTime"), context=context),
+            )
+            for v in values
+        ]
+        versions.sort(key=lambda v: v.modified_at)  # Graph lists newest first
+        return versions
+
+    async def get_version(self, path: str, version_id: str) -> bytes:
+        normalize_path(path)
+        context = "Downloading a version"
+        log_context = f"{context} (drive {self._drive_id})"
+        response = await self._send(
+            "GET",
+            f"{self._address(path)}/versions/{quote(version_id, safe='')}/content",
+            context=context,
+            log_context=log_context,
+        )
+        if response.status_code in (301, 302, 303, 307):
+            location = required_header(response, "Location", context=context)
+            response = await self._client.get(location)
+        if response.status_code == 404:
+            raise StorageNotFound(f"Version not found: {version_id}")
+        raise_for_storage(response, context=context, log_context=log_context)
+        return response.content
+
+    async def move_to_trash(self, path: str) -> None:
+        relative = normalize_path(path)
+        context = "Removing a file"
+        log_context = f"{context} (drive {self._drive_id})"
+        response = await self._send(
+            "DELETE", self._address(path), context=context, log_context=log_context
+        )
+        if response.status_code == 404:
+            raise StorageNotFound(f"File not found: {relative}")
+        raise_for_storage(response, context=context, log_context=log_context)
+
+    # -- health ----------------------------------------------------------------------------
+
+    async def health(self, *, probe_write: bool = False) -> HealthStatus:
+        """Staged probe, each stage naming the field or the grant at fault (spec 8.5, 8.6).
+
+        ``probe_write`` defaults to ``False``: credentials, site and library reachability only,
+        no request that could change anything in the customer's library. The caller must opt
+        in with ``probe_write=True`` to also run the last stage, which writes a small probe file
+        twice and counts its versions (Graph v1.0 does not expose a library's versioning setting
+        any other way) - that stage is reserved for the admin-only Test connection, where a human
+        asked for the answer and is waiting for it, never for the public, unauthenticated
+        ``/health`` endpoint. The result of each mode is cached separately for ten minutes so
+        repeated checks do not churn the library or re-probe reachability needlessly.
+        """
+        cached = self._probe.get(probe_write)
+        if cached is not None and cached[1] > monotonic():
+            return cached[0]
+        status = await self._probe_once(probe_write=probe_write)
+        self._probe[probe_write] = (status, monotonic() + PROBE_CACHE_SECONDS)
+        return status
+
+    async def _probe_once(self, *, probe_write: bool) -> HealthStatus:
+        try:
+            await self._tokens.token()
+        except StorageError as exc:
+            return HealthStatus(ok=False, detail=str(exc), field=FIELD_SECRET)
+
+        site_request_url = (
+            f"{GRAPH}/sites/{quote(self._site_id, safe=ID_SAFE_CHARS)}?$select=id,webUrl"
+        )
+        site = await self._quiet("GET", site_request_url)
+        if isinstance(site, HealthStatus):
+            return HealthStatus(ok=False, detail=site.detail, field=None)
+        if site.status_code == 404:
+            return HealthStatus(ok=False, detail=SITE_NOT_FOUND, field=FIELD_SITE_ID)
+        if site.status_code in (401, 403):
+            return HealthStatus(ok=False, detail=NO_GRANT, field=FIELD_SITE_ID)
+        if site.status_code >= 400:
+            return HealthStatus(
+                ok=False,
+                detail=f"Checking the site failed ({site.status_code}).",
+                field=FIELD_SITE_ID,
+            )
+        site_url = str(site.json().get("webUrl", "")).rstrip("/")
+
+        drive = await self._quiet("GET", f"{self._drive}?$select=id,name,webUrl")
+        if isinstance(drive, HealthStatus):
+            return HealthStatus(ok=False, detail=drive.detail, field=None)
+        if drive.status_code == 403:
+            return HealthStatus(ok=False, detail=LIBRARY_NO_GRANT, field=FIELD_DRIVE_GRANT)
+        if drive.status_code == 404:
+            return HealthStatus(ok=False, detail=LIBRARY_NOT_FOUND, field=FIELD_DRIVE_ID)
+        if drive.status_code >= 400:
+            return HealthStatus(
+                ok=False,
+                detail=f"Checking the document library failed ({drive.status_code}).",
+                field=FIELD_DRIVE_ID,
+            )
+        library_url = str(drive.json().get("webUrl", ""))
+        if site_url and not library_url.startswith(site_url):
+            return HealthStatus(ok=False, detail=WRONG_SITE, field=FIELD_DRIVE_WRONG_SITE)
+
+        if not probe_write:
+            return HealthStatus(ok=True, detail="ok")
+        return await self._probe_write_and_versioning()
+
+    async def _probe_write_and_versioning(self) -> HealthStatus:
+        """Write the probe file twice and count its versions.
+
+        ``item_id`` is set the moment the first write succeeds, and the ``finally`` block
+        deletes it on every exit path from here on - whether the second write fails, the
+        version count comes back short, or the version lookup itself errors - so a failed
+        health check never leaves the probe file behind in a customer's library.
+        """
+        probe_path = (
+            f"{self._root_path}/{HEALTH_PROBE_NAME}" if self._root_path else HEALTH_PROBE_NAME
+        )
+        address = f"{self._drive}/root:/{quote(probe_path, safe='/')}:"
+        item_id = ""
+        try:
+            for body in (b"qc-agent health probe 1\n", b"qc-agent health probe 2\n"):
+                written = await self._quiet(
+                    "PUT",
+                    f"{address}/content",
+                    content=body,
+                    headers={"Content-Type": "text/plain"},
+                )
+                if isinstance(written, HealthStatus):
+                    return HealthStatus(ok=False, detail=written.detail, field=None)
+                if written.status_code in (401, 403):
+                    return HealthStatus(ok=False, detail=NO_WRITE, field=FIELD_WRITE_GRANT)
+                if written.status_code >= 400:
+                    return HealthStatus(
+                        ok=False,
+                        detail=f"Writing a test file failed ({written.status_code}).",
+                        field=FIELD_DRIVE_ID,
+                    )
+                # Route this through the same parsing helper as everything else (finding 8):
+                # Test connection is the screen an administrator is staring at waiting for an
+                # answer, and the service layer that calls it catches only StorageError, so an
+                # unexpected shape here must become one rather than a bare KeyError that
+                # surfaces as a 500 telling the administrator nothing about which input is wrong.
+                item_id = required_str(
+                    parsed_json(written, context="Checking the connection"),
+                    "id",
+                    context="Checking the connection",
+                )
+
+            versions = await self._quiet("GET", f"{self._drive}/items/{item_id}/versions")
+            # A failed lookup is not evidence of anything about the library's versioning setting
+            # - it is this stage's own failure, and must be reported as such rather than inferred
+            # as a count of zero. Collapsing "the request failed" into "there were no versions"
+            # would report the specific, confident VERSIONING_OFF message on a transport error,
+            # exhausted retries under throttling, or a 500 from the provider - exactly what a
+            # correctly configured connection shows during a provider incident (finding 5).
+            if isinstance(versions, HealthStatus):
+                return HealthStatus(ok=False, detail=versions.detail, field=None)
+            if versions.status_code >= 400:
+                return HealthStatus(
+                    ok=False,
+                    detail=f"Checking version history failed ({versions.status_code}).",
+                    field=None,
+                )
+            count = len(versions.json().get("value", []))
+            if count < 2:
+                return HealthStatus(ok=False, detail=VERSIONING_OFF, field=FIELD_VERSIONING)
+            return HealthStatus(ok=True, detail="ok")
+        finally:
+            if item_id:
+                await self._quiet("DELETE", f"{self._drive}/items/{item_id}")  # best effort
+
+    async def _quiet(self, method: str, url: str, **kwargs: Any) -> httpx.Response | HealthStatus:
+        """Send a probe request with ``auth_raises=False``, so a 401/403 comes back as an
+        ordinary response the caller's own stage can inspect and assign its own field to,
+        instead of ``send_with_retry`` raising ``StorageAuthError`` and collapsing every stage
+        into the same generic message. Any other failure (connectivity, retries exhausted)
+        still comes back as a status with no specific field - the caller cannot say more."""
+        try:
+            return await self._send(
+                method, url, context="Checking the connection", auth_raises=False, **kwargs
+            )
+        except StorageError as exc:
+            return HealthStatus(ok=False, detail=str(exc))

@@ -1144,6 +1144,8 @@ export interface components {
         StorageTestResult: {
             /** Detail */
             detail: string;
+            /** Field */
+            field?: string | null;
             /** Ok */
             ok: boolean;
         };

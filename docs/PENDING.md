@@ -69,7 +69,8 @@ Việc còn nợ, tạm dừng ngày 2026-10-01 để xử lý task khác. Đán
 - [ ] Plan 3b: thêm index hàm trên `(storage->>'connection_id', lower(storage->>'root'))` khi số dự án tăng.
 - [ ] Quy ước backend: một route commit một lần; các service gọi liên tiếp dùng chung transaction.
 - [ ] Plan 5: `/auth/mfa/verify` trả 401 cho cả mã sai lẫn phiên hết hạn; đổi mã sai sang 400 để màn MFA phân biệt được mà không phải gọi thêm `/auth/me`.
-- [ ] Plan 3b/3c: PATCH kết nối lưu trữ ghi audit cả khi không có gì đổi; và không thể vừa kích hoạt vừa đặt mặc định trong một lần gọi (set_default chạy trước).
+- [x] Plan 3b: PATCH kết nối lưu trữ ghi audit cả khi không có gì đổi — fixed (Task 5): `update_connection` bỏ qua audit và chỉ commit khi `changes` rỗng.
+- [ ] Plan 3b/3c: không thể vừa kích hoạt vừa đặt mặc định trong một lần gọi (set_default chạy trước).
 - [ ] Plan 6: Caddy phải không buffer phản hồi `text/event-stream` (`flush_interval -1` cho `/api/v1/uploads/*/events`) và giữ kết nối lâu hơn 30 giây; backend gửi `: ping` mỗi 15 giây vì rewrite proxy của Next đóng phản hồi im lặng sau 30 giây (`experimental.proxyTimeout`).
 - [ ] Theo dõi: id của bảng `events` là identity, hai giao dịch có thể commit ngược thứ tự id nên một client đang stream có thể bỏ lỡ một trạng thái trung gian; client làm mới toàn bộ upload khi nhận `upload.settled` nên trạng thái cuối luôn đúng. Nếu cần tuyệt đối, chuyển sang khóa advisory theo upload khi ghi event.
 - [ ] Plan 4: tiêu đề loại tài liệu trên trang tài liệu (`DocumentPage.tsx`, `TYPE_TITLES`) lặp lại taxonomy để tránh thêm một request; khi taxonomy đổi phải cập nhật cả hai.

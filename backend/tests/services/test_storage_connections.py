@@ -1,5 +1,6 @@
 """Default connection at startup and project-to-adapter resolution through the connection."""
 
+import json
 import uuid
 from pathlib import Path
 
@@ -8,18 +9,35 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
+from app.core.crypto import SecretBox
 from app.db.models import AuditLog, StorageConnection
 from app.ingestion.taxonomy import Taxonomy
 from app.services.storage_connections import (
     DEFAULT_CONNECTION_NAME,
+    StorageConnectionError,
     connections_by_id,
     default_connection,
     ensure_default_connection,
+    require_secret,
+    update_connection,
+    validate_config,
 )
 from app.storage.base import StorageError
+from app.storage.gdrive import SHARED_CACHE
 from app.storage.localfs import LocalFsBackend
 from app.storage.select import project_backend
 from tests.factories import make_connection, make_project, make_user
+
+# A synthetic key body, assembled at runtime so the repository's gitleaks hook does not
+# flag a fixture. It is not a key and cannot sign anything.
+FAKE_PEM = "-----BEGIN " + "PRIVATE KEY-----\nnot-a-real-key\n-----END " + "PRIVATE KEY-----\n"
+
+SP_CONFIG = {
+    "tenant_id": "11111111-1111-1111-1111-111111111111",
+    "client_id": "22222222-2222-2222-2222-222222222222",
+    "site_id": "example.sharepoint.com,33333333-3333-3333-3333-333333333333,4444",
+    "drive_id": "b!test-library-drive-id",
+}
 
 
 async def test_ensure_default_connection_is_idempotent(db: AsyncSession) -> None:
@@ -75,3 +93,116 @@ async def test_project_backend_with_a_missing_or_broken_binding_raises(
     project.storage = {"root": "demo"}
     with pytest.raises(StorageError, match="incomplete"):
         await project_backend(db, project, settings)
+
+
+def test_sharepoint_config_is_validated_and_trimmed(settings: Settings) -> None:
+    padded = {key: f"  {value}  " for key, value in SP_CONFIG.items()}
+    assert validate_config("sharepoint", padded, settings) == SP_CONFIG
+
+
+@pytest.mark.parametrize("missing", sorted(SP_CONFIG))
+def test_sharepoint_config_requires_every_field(settings: Settings, missing: str) -> None:
+    config = {k: v for k, v in SP_CONFIG.items() if k != missing}
+    with pytest.raises(StorageConnectionError, match=missing.replace("_", " ")):
+        validate_config("sharepoint", config, settings)
+
+
+def test_sharepoint_config_rejects_unknown_fields(settings: Settings) -> None:
+    with pytest.raises(StorageConnectionError):
+        validate_config("sharepoint", {**SP_CONFIG, "client_secret": "oops"}, settings)
+
+
+def test_gdrive_config_requires_the_shared_drive_id(settings: Settings) -> None:
+    assert validate_config("gdrive", {"drive_id": " 0ATest "}, settings) == {"drive_id": "0ATest"}
+    with pytest.raises(StorageConnectionError, match="Shared Drive id"):
+        validate_config("gdrive", {}, settings)
+
+
+@pytest.mark.parametrize("field", ["site_id", "drive_id"])
+@pytest.mark.parametrize(
+    "hostile",
+    ["a/b", "a?b", "a#b", "a b", "a\\b", "../escape", "a'b", '"', "a%2Fb"],
+)
+def test_sharepoint_rejects_an_id_with_characters_outside_the_safe_set(
+    settings: Settings, field: str, hostile: str
+) -> None:
+    """The site id and the drive id are the one field that separates one customer's document
+    library from another's. A pasted value containing a slash or a question mark must be
+    refused at the form, not silently retarget a request (finding 7)."""
+    config = {**SP_CONFIG, field: hostile}
+    with pytest.raises(StorageConnectionError):
+        validate_config("sharepoint", config, settings)
+
+
+@pytest.mark.parametrize(
+    "safe", ["example.sharepoint.com,33333333-3333-3333-3333-333333333333,4444", "b!a-b_c.d:e"]
+)
+def test_sharepoint_accepts_the_real_shapes_of_id_seen_in_practice(
+    settings: Settings, safe: str
+) -> None:
+    config = {**SP_CONFIG, "site_id": safe, "drive_id": safe}
+    validated = validate_config("sharepoint", config, settings)
+    assert validated["site_id"] == safe and validated["drive_id"] == safe
+
+
+@pytest.mark.parametrize("hostile", ["a/b", "a?b", "a#b", "a b", "a\\b", "../escape"])
+def test_gdrive_rejects_a_drive_id_with_characters_outside_the_safe_set(
+    settings: Settings, hostile: str
+) -> None:
+    with pytest.raises(StorageConnectionError):
+        validate_config("gdrive", {"drive_id": hostile}, settings)
+
+
+async def test_a_secret_is_required_for_cloud_types(db: AsyncSession, settings: Settings) -> None:
+    """A connection form that cannot store the secret is not a usable connection."""
+    with pytest.raises(StorageConnectionError, match="client secret is required"):
+        require_secret("sharepoint", None)
+    with pytest.raises(StorageConnectionError, match="service-account key is required"):
+        require_secret("gdrive", None)
+    require_secret("localfs", None)  # no secret, no complaint
+
+
+async def test_update_connection_invalidates_the_gdrive_folder_cache_on_a_config_change(
+    db: AsyncSession, settings: Settings
+) -> None:
+    """Finding 1's other half: correcting a gdrive connection's configuration (most importantly
+    its Shared Drive id) must drop any folder id cached under this connection's scope, so the
+    next publish resolves fresh instead of risking an id cached against the old drive."""
+    actor = await make_user(db, settings)
+    box = SecretBox(settings.secret_encryption_key)
+    connection = StorageConnection(
+        type="gdrive",
+        name="Customer drive",
+        config={"drive_id": "drive-a"},
+        is_default=False,
+        is_active=True,
+        created_by=actor.id,
+    )
+    db.add(connection)
+    await db.commit()
+    await db.refresh(connection)
+
+    cached_key = f"{connection.id}:drive-a::02-requirements"
+    SHARED_CACHE.put(cached_key, "folder-in-a")
+    assert SHARED_CACHE.get(cached_key) == "folder-in-a"
+
+    await update_connection(
+        db, connection, actor=actor, box=box, settings=settings, config={"drive_id": "drive-b"}
+    )
+    assert SHARED_CACHE.get(cached_key) is None
+
+
+def test_a_malformed_service_account_key_is_refused(settings: Settings) -> None:
+    with pytest.raises(StorageConnectionError, match="valid JSON"):
+        require_secret("gdrive", "not json")
+    require_secret(
+        "gdrive",
+        json.dumps(
+            {
+                "type": "service_account",
+                "private_key": FAKE_PEM,
+                "client_email": "qc-agent@qc-agent-test.iam.gserviceaccount.com",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+        ),
+    )

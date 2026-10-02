@@ -9,8 +9,11 @@ dependencies = [
     "asyncpg>=0.31.0",
     "cryptography>=50.0.2",
     "fastapi>=0.142.2",
+    "google-auth>=2.59.1",
+    "httpx>=0.28.1",
     "langdetect>=1.0.9",
     "markitdown[docx,pdf,pptx,xlsx]>=0.1.8",
+    "msal>=1.39.0",
     "pydantic-settings>=2.15.0",
     "pymupdf>=1.28.2",
     "pyotp>=2.10.0",
@@ -61,12 +64,11 @@ exclude = ["migrations/"]
 untyped_calls_exclude = ["pymupdf"]  # ships py.typed but leaves Document untyped
 
 [[tool.mypy.overrides]]
-module = ["pyotp", "langdetect", "langdetect.*"]
+module = ["pyotp", "langdetect", "langdetect.*", "msal", "google.auth.*", "google.oauth2.*"]
 ignore_missing_imports = true
 
 [dependency-groups]
 dev = [
-    "httpx>=0.28.1",
     "mypy>=2.3.1",
     "openpyxl>=3.1.5",
     "pytest>=9.1.1",

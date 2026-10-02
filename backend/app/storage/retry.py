@@ -112,8 +112,14 @@ async def send_with_retry(
     policy: RetryPolicy,
     context: str,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    raise_on_auth_error: bool = True,
 ) -> httpx.Response:
     """Send the request, retrying throttling and transient failures.
+
+    ``raise_on_auth_error`` defaults to ``True``, which is today's behaviour: a non-retryable
+    401 or 403 is turned into ``StorageAuthError`` here rather than handed back. Pass ``False``
+    only when the caller needs to read the status itself (a staged health probe distinguishing
+    several different 401/403 causes); every other caller keeps today's behaviour unchanged.
 
     ``build_request`` is a factory, not a request, so each attempt gets a fresh body. A response
     that is not retryable is returned as it is: the caller decides whether 404 means
@@ -131,7 +137,7 @@ async def send_with_retry(
             await sleep(backoff_delay(attempt, policy))
             continue
         if not _should_retry(response, policy):
-            if response.status_code in (401, 403):
+            if raise_on_auth_error and response.status_code in (401, 403):
                 raise_for_storage(response, context=context)
             return response
         last = response

@@ -220,3 +220,76 @@ async def test_gap_report_and_version_suggestions(
     assert (
         await clients["viewer"].get(suggest, params={"doc_type": "srs", "title": "Portal SRS"})
     ).status_code == 403
+
+
+async def test_listing_carries_uploader_and_version_date(
+    make_client: MakeClient, db: AsyncSession, settings: Settings, taxonomy: Taxonomy
+) -> None:
+    project, clients, _, ids = await _world(make_client, db, settings, taxonomy)
+    documents = (await clients["viewer"].get(f"/api/v1/projects/{project.id}/documents")).json()
+    by_id = {d["id"]: d for d in documents}
+    assert by_id[ids["srs"]]["uploaded_by_name"] == "Editor"
+    assert by_id[ids["srs"]]["version_created_at"] is not None
+    stub = next(d for d in documents if d["is_stub"])
+    assert stub["uploaded_by_name"] == "Owner"  # stubs are created by the project creator
+    single = (await clients["viewer"].get(f"/api/v1/documents/{ids['srs']}")).json()
+    assert single["uploaded_by_name"] == "Editor" and single["version_created_at"] is not None
+
+
+async def test_version_content_returns_frontmatter_and_body(
+    make_client: MakeClient, db: AsyncSession, settings: Settings, taxonomy: Taxonomy
+) -> None:
+    _, clients, _, ids = await _world(make_client, db, settings, taxonomy)
+    content = await clients["viewer"].get(f"/api/v1/documents/{ids['srs']}/versions/1/content")
+    assert content.status_code == 200
+    body = content.json()
+    assert body["version"] == 1
+    assert body["markdown_name"] == "srs--portal-srs.md"
+    assert body["original_name"] == "srs--portal-srs.docx"
+    fm = body["frontmatter"]
+    assert fm["doc_type"] == "srs" and fm["version"] == 1 and fm["kind"] == "converted"
+    assert fm["uploaded_by"] == "Editor" and fm["type_check"] == "skipped"
+    assert fm["visibility"] == "internal" and "uploaded_at" in fm
+    assert not body["body"].startswith("---")
+    assert "The system shall allow users" in body["body"]
+    # clients: shared only; unknown version: 404
+    assert (
+        await clients["client"].get(f"/api/v1/documents/{ids['srs']}/versions/1/content")
+    ).status_code == 404
+    shared = await clients["client"].get(f"/api/v1/documents/{ids['runbook']}/versions/1/content")
+    assert shared.status_code == 200 and "Restart." in shared.json()["body"]
+    assert (
+        await clients["viewer"].get(f"/api/v1/documents/{ids['srs']}/versions/9/content")
+    ).status_code == 404
+    stub = (await db.scalars(select(Document).where(Document.is_stub.is_(True)))).first()
+    assert stub is not None
+    stub_content = (
+        await clients["viewer"].get(f"/api/v1/documents/{stub.id}/versions/1/content")
+    ).json()
+    assert stub_content["frontmatter"]["kind"] == "stub" and stub_content["original_name"] is None
+
+
+async def test_gap_report_is_typed(
+    make_client: MakeClient, db: AsyncSession, settings: Settings, taxonomy: Taxonomy
+) -> None:
+    project, clients, _, _ = await _world(make_client, db, settings, taxonomy)
+    report = (await clients["owner"].get(f"/api/v1/projects/{project.id}/gap-report")).json()
+    assert report["project"] == {"slug": project.slug, "name": "Demo"}
+    assert set(report) == {
+        "qc_agent",
+        "project",
+        "generated_at",
+        "required_total",
+        "required_present",
+        "completeness",
+        "folders",
+    }
+    assert [f["id"] for f in report["folders"]][:2] == ["overview", "requirements"]
+    entry = report["folders"][1]["doc_types"][1]
+    assert entry == {
+        "doc_type": "srs",
+        "title": "Software Requirements Specification",
+        "required": True,
+        "status": "present",
+        "documents": 1,
+    }

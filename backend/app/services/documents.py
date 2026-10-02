@@ -1,13 +1,16 @@
 """Document queries and edits with the role and visibility rules of spec 9."""
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import EDITOR_ROLES, Document, DocumentVersion, User
+from app.ingestion.naming import split_frontmatter
 from app.ingestion.taxonomy import Taxonomy
 from app.ingestion.versioning import VersionCandidate, VersionSuggestion, suggest_versions
 from app.services import audit
@@ -146,3 +149,41 @@ async def version_suggestions(
             for d in documents
         ],
     )
+
+
+@dataclass(frozen=True)
+class VersionMeta:
+    uploaded_by_name: str
+    created_at: datetime
+
+
+async def current_version_meta(
+    db: AsyncSession, document_ids: Iterable[uuid.UUID]
+) -> dict[uuid.UUID, VersionMeta]:
+    """Uploader display name and date of each document's current version (one query)."""
+    ids = list(document_ids)
+    if not ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(DocumentVersion.document_id, User.display_name, DocumentVersion.created_at)
+            .join(Document, Document.id == DocumentVersion.document_id)
+            .join(User, User.id == DocumentVersion.uploaded_by)
+            .where(
+                DocumentVersion.document_id.in_(ids),
+                DocumentVersion.version == Document.current_version,
+            )
+        )
+    ).all()
+    return {
+        document_id: VersionMeta(uploaded_by_name=name, created_at=created_at)
+        for document_id, name, created_at in rows
+    }
+
+
+def split_content(markdown_text: str) -> tuple[dict[str, Any], str]:
+    """Frontmatter mapping and body; a file without valid frontmatter is all body."""
+    try:
+        return split_frontmatter(markdown_text)
+    except ValueError:
+        return {}, markdown_text

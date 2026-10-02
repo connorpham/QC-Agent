@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -20,6 +20,8 @@ class DocumentOut(BaseModel):
     created_by: uuid.UUID
     created_at: datetime
     updated_at: datetime
+    uploaded_by_name: str | None = None  # display name of the current version's uploader
+    version_created_at: datetime | None = None
 
 
 class DocumentVersionOut(BaseModel):
@@ -54,3 +56,43 @@ class VersionSuggestionOut(BaseModel):
     title: str
     current_version: int
     similarity: float
+
+
+class DocumentContentOut(BaseModel):
+    """One version's converted Markdown split into frontmatter and body (spec 5.3)."""
+
+    version: int
+    frontmatter: dict[str, Any]
+    body: str
+    markdown_name: str
+    original_name: str | None
+
+
+class GapEntryOut(BaseModel):
+    doc_type: str
+    title: str
+    required: bool
+    status: Literal["present", "stub", "missing"]
+    documents: int
+
+
+class GapFolderOut(BaseModel):
+    id: str
+    dir: str
+    stage: str
+    doc_types: list[GapEntryOut]
+
+
+class GapProjectOut(BaseModel):
+    slug: str
+    name: str
+
+
+class GapReportOut(BaseModel):
+    qc_agent: int
+    project: GapProjectOut
+    generated_at: datetime
+    required_total: int
+    required_present: int
+    completeness: float
+    folders: list[GapFolderOut]

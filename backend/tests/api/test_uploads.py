@@ -233,3 +233,20 @@ async def test_oversized_request_is_refused_before_the_body_is_read(
     assert forged.status_code == 413
     assert forged.json() == {"detail": "Upload is too large."}
     assert (await db.scalars(select(AuditLog.action))).all().count("upload.created") == 0
+
+
+async def test_upload_limits_endpoint(
+    make_client: MakeClient, db: AsyncSession, settings: Settings, taxonomy: Taxonomy
+) -> None:
+    _, users = await _members(db, settings, taxonomy)
+    viewer = await _client(make_client, db, settings, users["viewer"])
+    response = await viewer.get("/api/v1/upload-limits")
+    assert response.status_code == 200
+    assert response.json() == {
+        "max_file_mb": settings.max_upload_file_mb,
+        "max_batch_mb": settings.max_upload_batch_mb,
+        "allowed_extensions": ["csv", "docx", "html", "md", "pdf", "pptx", "txt", "xlsx", "zip"],
+        "zip_max_entries": 200,
+    }
+    anonymous = await make_client()
+    assert (await anonymous.get("/api/v1/upload-limits")).status_code == 401

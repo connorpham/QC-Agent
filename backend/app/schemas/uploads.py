@@ -73,3 +73,12 @@ class TaskOut(BaseModel):
 
 class ConfirmTypeRequest(BaseModel):
     doc_type: str = Field(min_length=1, max_length=80)
+
+
+class UploadLimitsOut(BaseModel):
+    """What the wizard checks before sending a byte; mirrors the server's intake limits."""
+
+    max_file_mb: int
+    max_batch_mb: int
+    allowed_extensions: list[str]
+    zip_max_entries: int

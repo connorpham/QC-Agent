@@ -163,6 +163,48 @@
         "title": "DocTypeOut",
         "type": "object"
       },
+      "DocumentContentOut": {
+        "description": "One version's converted Markdown split into frontmatter and body (spec 5.3).",
+        "properties": {
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "frontmatter": {
+            "additionalProperties": true,
+            "title": "Frontmatter",
+            "type": "object"
+          },
+          "markdown_name": {
+            "title": "Markdown Name",
+            "type": "string"
+          },
+          "original_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Name"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "frontmatter",
+          "body",
+          "markdown_name",
+          "original_name"
+        ],
+        "title": "DocumentContentOut",
+        "type": "object"
+      },
       "DocumentOut": {
         "properties": {
           "created_at": {
@@ -213,6 +255,29 @@
             "format": "date-time",
             "title": "Updated At",
             "type": "string"
+          },
+          "uploaded_by_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uploaded By Name"
+          },
+          "version_created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version Created At"
           },
           "visibility": {
             "title": "Visibility",
@@ -376,6 +441,139 @@
           "doc_types"
         ],
         "title": "FolderOut",
+        "type": "object"
+      },
+      "GapEntryOut": {
+        "properties": {
+          "doc_type": {
+            "title": "Doc Type",
+            "type": "string"
+          },
+          "documents": {
+            "title": "Documents",
+            "type": "integer"
+          },
+          "required": {
+            "title": "Required",
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "present",
+              "stub",
+              "missing"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "doc_type",
+          "title",
+          "required",
+          "status",
+          "documents"
+        ],
+        "title": "GapEntryOut",
+        "type": "object"
+      },
+      "GapFolderOut": {
+        "properties": {
+          "dir": {
+            "title": "Dir",
+            "type": "string"
+          },
+          "doc_types": {
+            "items": {
+              "$ref": "#/components/schemas/GapEntryOut"
+            },
+            "title": "Doc Types",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "stage": {
+            "title": "Stage",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "dir",
+          "stage",
+          "doc_types"
+        ],
+        "title": "GapFolderOut",
+        "type": "object"
+      },
+      "GapProjectOut": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "name"
+        ],
+        "title": "GapProjectOut",
+        "type": "object"
+      },
+      "GapReportOut": {
+        "properties": {
+          "completeness": {
+            "title": "Completeness",
+            "type": "number"
+          },
+          "folders": {
+            "items": {
+              "$ref": "#/components/schemas/GapFolderOut"
+            },
+            "title": "Folders",
+            "type": "array"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "project": {
+            "$ref": "#/components/schemas/GapProjectOut"
+          },
+          "qc_agent": {
+            "title": "Qc Agent",
+            "type": "integer"
+          },
+          "required_present": {
+            "title": "Required Present",
+            "type": "integer"
+          },
+          "required_total": {
+            "title": "Required Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "qc_agent",
+          "project",
+          "generated_at",
+          "required_total",
+          "required_present",
+          "completeness",
+          "folders"
+        ],
+        "title": "GapReportOut",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -1382,6 +1580,38 @@
         "title": "UploadItemOut",
         "type": "object"
       },
+      "UploadLimitsOut": {
+        "description": "What the wizard checks before sending a byte; mirrors the server's intake limits.",
+        "properties": {
+          "allowed_extensions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Extensions",
+            "type": "array"
+          },
+          "max_batch_mb": {
+            "title": "Max Batch Mb",
+            "type": "integer"
+          },
+          "max_file_mb": {
+            "title": "Max File Mb",
+            "type": "integer"
+          },
+          "zip_max_entries": {
+            "title": "Zip Max Entries",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "max_file_mb",
+          "max_batch_mb",
+          "allowed_extensions",
+          "zip_max_entries"
+        ],
+        "title": "UploadLimitsOut",
+        "type": "object"
+      },
       "UploadOut": {
         "properties": {
           "created_at": {
@@ -1953,6 +2183,58 @@
         ]
       }
     },
+    "/api/v1/documents/{document_id}/versions/{version}/content": {
+      "get": {
+        "operationId": "version_content_api_v1_documents__document_id__versions__version__content_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentContentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Version Content",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
     "/api/v1/documents/{document_id}/versions/{version}/markdown": {
       "get": {
         "operationId": "download_markdown_api_v1_documents__document_id__versions__version__markdown_get",
@@ -2424,9 +2706,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Gap Report Api V1 Projects  Project Id  Gap Report Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/GapReportOut"
                 }
               }
             },
@@ -3029,6 +3309,28 @@
         "summary": "Retry Item",
         "tags": [
           "uploads"
+        ]
+      }
+    },
+    "/api/v1/upload-limits": {
+      "get": {
+        "description": "The intake limits the upload wizard enforces before sending anything.",
+        "operationId": "get_upload_limits_api_v1_upload_limits_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadLimitsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Upload Limits",
+        "tags": [
+          "meta"
         ]
       }
     },

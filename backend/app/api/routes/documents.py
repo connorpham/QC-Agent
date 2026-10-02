@@ -1,6 +1,7 @@
+import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, Response
@@ -14,12 +15,15 @@ from app.api.deps import (
     TaxonomyDep,
     Uploader,
 )
+from app.db.models import Document
 from app.ingestion.gaps import build_gap_report
 from app.ingestion.intake import content_type_for
 from app.schemas.documents import (
+    DocumentContentOut,
     DocumentOut,
     DocumentUpdate,
     DocumentVersionOut,
+    GapReportOut,
     VersionSuggestionOut,
 )
 from app.services import documents as documents_service
@@ -37,6 +41,18 @@ def _attachment(filename: str) -> dict[str, str]:
         "Content-Disposition": f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}",
         "X-Content-Type-Options": "nosniff",
     }
+
+
+def _document_out(
+    document: Document, meta: Mapping[uuid.UUID, documents_service.VersionMeta]
+) -> DocumentOut:
+    current = meta.get(document.id)
+    return DocumentOut.model_validate(document).model_copy(
+        update={
+            "uploaded_by_name": current.uploaded_by_name if current else None,
+            "version_created_at": current.created_at if current else None,
+        }
+    )
 
 
 @router.get("/projects/{project_id}/documents", response_model=list[DocumentOut])
@@ -59,11 +75,12 @@ async def list_documents(
         visibility=visibility,
         q=q,
     )
-    return [DocumentOut.model_validate(d) for d in documents]
+    meta = await documents_service.current_version_meta(db, (d.id for d in documents))
+    return [_document_out(d, meta) for d in documents]
 
 
-@router.get("/projects/{project_id}/gap-report")
-async def gap_report(ctx: InternalMember, db: DbSession, taxonomy: TaxonomyDep) -> dict[str, Any]:
+@router.get("/projects/{project_id}/gap-report", response_model=GapReportOut)
+async def gap_report(ctx: InternalMember, db: DbSession, taxonomy: TaxonomyDep) -> GapReportOut:
     report = build_gap_report(
         taxonomy,
         await document_facts(db, ctx.project.id),
@@ -71,7 +88,7 @@ async def gap_report(ctx: InternalMember, db: DbSession, taxonomy: TaxonomyDep) 
         project_name=ctx.project.name,
         generated_at=datetime.now(UTC),
     )
-    return report.to_dict()
+    return GapReportOut.model_validate(report.to_dict())
 
 
 @router.get("/projects/{project_id}/version-suggestions", response_model=list[VersionSuggestionOut])
@@ -96,8 +113,9 @@ async def version_suggestions(
 
 
 @router.get("/documents/{document_id}", response_model=DocumentOut)
-async def get_document(ctx: DocumentAccess) -> DocumentOut:
-    return DocumentOut.model_validate(ctx.document)
+async def get_document(ctx: DocumentAccess, db: DbSession) -> DocumentOut:
+    meta = await documents_service.current_version_meta(db, [ctx.document.id])
+    return _document_out(ctx.document, meta)
 
 
 @router.get("/documents/{document_id}/versions", response_model=list[DocumentVersionOut])
@@ -150,6 +168,23 @@ async def download_markdown(version: int, ctx: DocumentAccess, db: DbSession) ->
     )
 
 
+@router.get(
+    "/documents/{document_id}/versions/{version}/content", response_model=DocumentContentOut
+)
+async def version_content(version: int, ctx: DocumentAccess, db: DbSession) -> DocumentContentOut:
+    row = await documents_service.get_version(db, ctx.document.id, version)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Version not found.")
+    frontmatter, body = documents_service.split_content(row.markdown_text)
+    return DocumentContentOut(
+        version=row.version,
+        frontmatter=frontmatter,
+        body=body,
+        markdown_name=PurePosixPath(row.markdown_path).name,
+        original_name=PurePosixPath(row.original_path).name if row.original_path else None,
+    )
+
+
 @router.patch("/documents/{document_id}", response_model=DocumentOut)
 async def update_document(body: DocumentUpdate, ctx: DocumentAccess, db: DbSession) -> DocumentOut:
     try:
@@ -163,4 +198,5 @@ async def update_document(body: DocumentUpdate, ctx: DocumentAccess, db: DbSessi
         )
     except documents_service.DocumentPermissionError as exc:
         raise HTTPException(status_code=403, detail=exc.message) from exc
-    return DocumentOut.model_validate(ctx.document)
+    meta = await documents_service.current_version_meta(db, [ctx.document.id])
+    return _document_out(ctx.document, meta)

@@ -180,6 +180,29 @@ def test_rotating_the_secret_replaces_the_cached_provider(tmp_path: Path) -> Non
     assert first._tokens is not second._tokens  # noqa: SLF001
 
 
+def test_correcting_the_tenant_id_replaces_the_cached_provider(tmp_path: Path) -> None:
+    """A mistyped tenant id, corrected while leaving the secret field blank (the documented way
+    to keep a stored secret), must take effect on the next request with no restart (finding 2).
+    ``GraphTokenProvider`` stores the tenant and client id inside the cached object itself, so the
+    provider cache key must change when either does, even though the secret - and therefore its
+    digest - has not."""
+    settings = _settings(tmp_path)
+    connection = _cloud("sharepoint", SP_CONFIG, "client-secret-value", settings)
+    first = backend_for(connection, "acme", settings)
+    connection.config = {**connection.config, "tenant_id": "99999999-9999-9999-9999-999999999999"}
+    second = backend_for(connection, "acme", settings)
+    assert first._tokens is not second._tokens  # noqa: SLF001 - the point of the test
+
+
+def test_correcting_the_client_id_replaces_the_cached_provider(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    connection = _cloud("sharepoint", SP_CONFIG, "client-secret-value", settings)
+    first = backend_for(connection, "acme", settings)
+    connection.config = {**connection.config, "client_id": "88888888-8888-8888-8888-888888888888"}
+    second = backend_for(connection, "acme", settings)
+    assert first._tokens is not second._tokens  # noqa: SLF001
+
+
 def test_a_cloud_connection_without_a_secret_is_refused(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     connection = _Connection(id=uuid.uuid4(), type="gdrive", name="x", config=GD_CONFIG)

@@ -52,7 +52,15 @@ def connection_secret(connection: StorageConnection, settings: Settings) -> str:
 
 def _provider_key(connection: StorageConnection) -> str:
     digest = hashlib.sha256((connection.secret_enc or "").encode()).hexdigest()[:16]
-    return f"{connection.type}:{connection.id}:{digest}"
+    # SharePoint's token provider stores the tenant id and client id inside the cached object
+    # itself, not just the secret, so a cache key built from the secret's digest alone goes stale
+    # the moment either is corrected while the secret field is left blank - the documented way to
+    # keep a stored secret. Folding both into the key (empty for every other connection type, so
+    # this is a no-op for localfs and gdrive) makes a config-only correction get a fresh provider
+    # on the very next request, with no restart (finding 2).
+    tenant_id = connection.config.get("tenant_id", "") if connection.type == SHAREPOINT else ""
+    client_id = connection.config.get("client_id", "") if connection.type == SHAREPOINT else ""
+    return f"{connection.type}:{connection.id}:{digest}:{tenant_id}:{client_id}"
 
 
 def _config_value(connection: StorageConnection, key: str) -> str:

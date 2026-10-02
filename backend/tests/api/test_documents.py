@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
-from app.db.models import AuditLog, Document, Project, User
+from app.db.models import AuditLog, Document, DocumentVersion, Project, User
 from app.ingestion.taxonomy import Taxonomy
 from tests.factories import add_member, make_project, make_session_token, make_user
 from tests.helpers.files import docx_bytes
@@ -293,3 +293,41 @@ async def test_gap_report_is_typed(
         "status": "present",
         "documents": 1,
     }
+
+
+async def test_version_content_falls_back_to_the_whole_body_when_frontmatter_is_unparsable(
+    make_client: MakeClient, db: AsyncSession, settings: Settings, taxonomy: Taxonomy
+) -> None:
+    _, clients, _, ids = await _world(make_client, db, settings, taxonomy)
+    row = await db.scalar(
+        select(DocumentVersion).where(
+            DocumentVersion.document_id == ids["srs"], DocumentVersion.version == 1
+        )
+    )
+    assert row is not None
+    malformed = "---\nfoo: [1, 2\n---\nBody after malformed frontmatter.\n"
+    row.markdown_text = malformed
+    await db.commit()
+    content = await clients["viewer"].get(f"/api/v1/documents/{ids['srs']}/versions/1/content")
+    assert content.status_code == 200
+    body = content.json()
+    assert body["frontmatter"] == {} and body["body"] == malformed
+
+
+async def test_version_content_falls_back_to_the_whole_body_when_there_is_no_frontmatter(
+    make_client: MakeClient, db: AsyncSession, settings: Settings, taxonomy: Taxonomy
+) -> None:
+    _, clients, _, ids = await _world(make_client, db, settings, taxonomy)
+    row = await db.scalar(
+        select(DocumentVersion).where(
+            DocumentVersion.document_id == ids["srs"], DocumentVersion.version == 1
+        )
+    )
+    assert row is not None
+    plain = "Plain text, no frontmatter at all.\n"
+    row.markdown_text = plain
+    await db.commit()
+    content = await clients["viewer"].get(f"/api/v1/documents/{ids['srs']}/versions/1/content")
+    assert content.status_code == 200
+    body = content.json()
+    assert body["frontmatter"] == {} and body["body"] == plain

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+import yaml
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -185,5 +186,5 @@ def split_content(markdown_text: str) -> tuple[dict[str, Any], str]:
     """Frontmatter mapping and body; a file without valid frontmatter is all body."""
     try:
         return split_frontmatter(markdown_text)
-    except ValueError:
+    except (ValueError, yaml.YAMLError):
         return {}, markdown_text

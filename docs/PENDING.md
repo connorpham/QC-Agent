@@ -40,7 +40,7 @@ Việc còn nợ, tạm dừng ngày 2026-10-01 để xử lý task khác. Đán
 - [x] Lập kế hoạch Plan 3a (UI shell + storage settings): `docs/superpowers/plans/2026-10-01-plan-3a-ui-storage-settings.md`; Plan 3 tách thành 3a/3b/3c.
 - [x] Thực thi Plan 3a (owner: Claude; review: Connor) — merged PR #4.
 - [x] Lập kế hoạch Plan 5 (upload + document UI, chạy trước Plan 4 vì chưa có API key): `docs/superpowers/plans/2026-10-02-plan-5-upload-documents-ui.md`.
-- [ ] Thực thi Plan 5 (owner: Claude; review: Connor).
+- [x] Thực thi Plan 5 (owner: Claude; review: Connor) — merged PR #6.
 - [ ] Lập kế hoạch Plan 4 (agent): nhận thêm màn hình duyệt bản nháp chuẩn hóa và badge "normalised" từ Plan 5.
 - [ ] Lập kế hoạch Plan 3b (SharePoint + Google Drive; cần site test của IT) và Plan 3c (đổi lưu trữ có migration).
 - [ ] Thực thi Plan 0, spike Agent SDK (cần API key): chạy song song, `setting_sources=[]`, `CLAUDE_CONFIG_DIR`, chi phí trên 10 tài liệu mẫu.

@@ -49,6 +49,26 @@ uv run ruff check . && uv run mypy app
 
 Tests use the `qc_agent_test` database created by `deploy/dev/init-test-db.sql`. Override with `TEST_DATABASE_URL`. Storage and staging roots are temporary directories created per test session; fixture documents are generated at test time (no binary fixtures, no customer content).
 
+### Live storage tests (opt-in)
+
+The storage contract suite runs on the local adapter in every test run. To run the same suite
+against real SharePoint and Google Drive:
+
+```bash
+QC_AGENT_LIVE_STORAGE=1 uv run pytest tests/storage/test_contract.py -v
+```
+
+It needs a test document library on the shared SharePoint site and a test Shared Drive, and the
+variables listed in `.env.example` under "Live storage tests". Two grants cannot be made from
+the application and must be done by an administrator first: `Sites.Selected` **write** on the
+SharePoint site for the registered Entra ID application, and the service account added to the
+Shared Drive as **Content manager**. The suite writes under a throwaway folder per run and
+removes what it wrote. CI never sets the flag, so pull requests stay offline and free.
+
+Never put a credential in `.env`, in a shell history or in a commit: export the SharePoint
+values in your shell for the run, and point `QC_LIVE_GDRIVE_SA_JSON_FILE` at a key file kept
+outside the repository.
+
 ## Sign-in flow
 
 1. `POST /api/v1/auth/login` → session cookie, MFA pending.

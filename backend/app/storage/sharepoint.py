@@ -44,6 +44,7 @@ PROBE_CACHE_SECONDS = 600.0
 FIELD_SECRET = "secret"  # noqa: S105 - a diagnosis-code label, not a credential
 FIELD_SITE_ID = "site_id"
 FIELD_DRIVE_ID = "drive_id"
+FIELD_DRIVE_GRANT = "drive_id_no_grant"
 FIELD_DRIVE_WRONG_SITE = "drive_id_wrong_site"
 FIELD_WRITE_GRANT = "write_grant"
 FIELD_VERSIONING = "versioning"
@@ -62,6 +63,15 @@ NO_WRITE = (
     "be write, not read."
 )
 LIBRARY_NOT_FOUND = "Document library not found. Check the document library (drive) id."
+# A site shared by every customer means the natural next action on "check the library id" is to
+# paste a different one - and every other library on that site belongs to another customer. A 403
+# here means the application can be denied this specific library despite already having access to
+# the site, which is a grant to fix, never a reason to retype the one field that separates
+# customers (finding 6).
+LIBRARY_NO_GRANT = (
+    "This application cannot access this document library, even though it can see the site. A "
+    "Microsoft 365 administrator must grant access to this specific library."
+)
 WRONG_SITE = (
     "This document library does not belong to the site above. Check the document library "
     "(drive) id."
@@ -372,7 +382,9 @@ class SharePointBackend:
         drive = await self._quiet("GET", f"{self._drive}?$select=id,name,webUrl")
         if isinstance(drive, HealthStatus):
             return HealthStatus(ok=False, detail=drive.detail, field=None)
-        if drive.status_code in (403, 404):
+        if drive.status_code == 403:
+            return HealthStatus(ok=False, detail=LIBRARY_NO_GRANT, field=FIELD_DRIVE_GRANT)
+        if drive.status_code == 404:
             return HealthStatus(ok=False, detail=LIBRARY_NOT_FOUND, field=FIELD_DRIVE_ID)
         if drive.status_code >= 400:
             return HealthStatus(
@@ -422,9 +434,21 @@ class SharePointBackend:
                 item_id = str(written.json()["id"])
 
             versions = await self._quiet("GET", f"{self._drive}/items/{item_id}/versions")
-            count = (
-                0 if isinstance(versions, HealthStatus) else len(versions.json().get("value", []))
-            )
+            # A failed lookup is not evidence of anything about the library's versioning setting
+            # - it is this stage's own failure, and must be reported as such rather than inferred
+            # as a count of zero. Collapsing "the request failed" into "there were no versions"
+            # would report the specific, confident VERSIONING_OFF message on a transport error,
+            # exhausted retries under throttling, or a 500 from the provider - exactly what a
+            # correctly configured connection shows during a provider incident (finding 5).
+            if isinstance(versions, HealthStatus):
+                return HealthStatus(ok=False, detail=versions.detail, field=None)
+            if versions.status_code >= 400:
+                return HealthStatus(
+                    ok=False,
+                    detail=f"Checking version history failed ({versions.status_code}).",
+                    field=None,
+                )
+            count = len(versions.json().get("value", []))
             if count < 2:
                 return HealthStatus(ok=False, detail=VERSIONING_OFF, field=FIELD_VERSIONING)
             return HealthStatus(ok=True, detail="ok")

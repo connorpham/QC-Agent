@@ -9,7 +9,17 @@ from app.storage.base import (
     StorageNotFound,
     StoragePathError,
 )
-from app.storage.sharepoint import CHUNK_BYTES, SIMPLE_UPLOAD_LIMIT, SharePointBackend
+from app.storage.sharepoint import (
+    CHUNK_BYTES,
+    FIELD_DRIVE_GRANT,
+    FIELD_DRIVE_ID,
+    FIELD_VERSIONING,
+    LIBRARY_NO_GRANT,
+    LIBRARY_NOT_FOUND,
+    SIMPLE_UPLOAD_LIMIT,
+    VERSIONING_OFF,
+    SharePointBackend,
+)
 
 SITE_ID = "contoso.sharepoint.com,00000000-0000-0000-0000-000000000000,1111"
 DRIVE_ID = "test-library-drive-id"
@@ -260,6 +270,31 @@ async def test_health_diagnoses_each_failure_stage() -> None:
     assert "document library" in status.detail
 
 
+async def test_health_distinguishes_forbidden_from_not_found_on_the_drive_stage() -> None:
+    """A 403 on the library itself must not be folded into "library not found": the natural next
+    action on that message is to paste a different library id, and on a site shared by every
+    customer, every other library belongs to another customer. A 403 means the application lacks
+    a grant to this one; a 404 means the id does not resolve at all - different faults, different
+    fields, different messages, never a substring in common to accidentally satisfy both checks
+    at once (finding 6)."""
+    site_ok = httpx.Response(200, json={"id": SITE_ID, "webUrl": "https://c.invalid/sites/qc"})
+
+    forbidden = await _backend(
+        Script().on(f"/sites/{SITE_ID}", site_ok).on(DRIVE_PREFIX, httpx.Response(403, json={}))
+    ).health()
+    not_found = await _backend(
+        Script().on(f"/sites/{SITE_ID}", site_ok).on(DRIVE_PREFIX, httpx.Response(404, json={}))
+    ).health()
+
+    assert forbidden.ok is False and not_found.ok is False
+    assert forbidden.field == FIELD_DRIVE_GRANT
+    assert not_found.field == FIELD_DRIVE_ID
+    assert forbidden.field != not_found.field
+    assert forbidden.detail == LIBRARY_NO_GRANT
+    assert not_found.detail == LIBRARY_NOT_FOUND
+    assert forbidden.detail != not_found.detail
+
+
 async def test_health_rejects_a_library_from_another_site() -> None:
     """A drive id pasted from a different site must be caught here, not at the first upload."""
     script = (
@@ -323,6 +358,84 @@ async def test_health_reports_versioning_disabled() -> None:
     assert [r for r in script.requests if r.method == "DELETE"]  # no litter even when it fails
 
 
+async def test_health_versioning_lookup_transport_error_is_not_reported_as_disabled() -> None:
+    """A failed version lookup must not be reported as the specific, confident "version history
+    is disabled" message - that belongs only to a successful lookup that genuinely found fewer
+    than two versions. A transport error during the lookup itself is the last stage's own
+    failure, distinct from a genuinely disabled library (finding 5)."""
+    site_response = httpx.Response(
+        200, json={"id": SITE_ID, "webUrl": "https://c.invalid/sites/qc"}
+    )
+    drive_response = httpx.Response(
+        200, json={"id": DRIVE_ID, "webUrl": "https://c.invalid/sites/qc/Docs"}
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        target = f"{request.method} {request.url}"
+        if f"/sites/{SITE_ID}" in target:
+            return site_response
+        if target.startswith(f"GET {DRIVE_PREFIX}?"):
+            return drive_response
+        if request.method == "PUT":
+            return httpx.Response(201, json=_item("probe-1"))
+        if "/versions" in target:
+            raise httpx.ConnectError("boom")
+        if request.method == "DELETE":
+            return httpx.Response(204)
+        return httpx.Response(404, json={})
+
+    backend = SharePointBackend(
+        SITE_ID,
+        DRIVE_ID,
+        "",
+        FakeTokens(),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        sleep=_no_sleep,
+    )
+    status = await backend.health(probe_write=True)
+    assert status.ok is False
+    assert status.field != FIELD_VERSIONING
+    assert status.detail != VERSIONING_OFF
+
+
+async def test_health_versioning_lookup_exhausted_retries_is_not_reported_as_disabled() -> None:
+    """Retries exhausted under sustained throttling during the version lookup is also the last
+    stage's own failure, not evidence that versioning is off (finding 5)."""
+    site_response = httpx.Response(
+        200, json={"id": SITE_ID, "webUrl": "https://c.invalid/sites/qc"}
+    )
+    drive_response = httpx.Response(
+        200, json={"id": DRIVE_ID, "webUrl": "https://c.invalid/sites/qc/Docs"}
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        target = f"{request.method} {request.url}"
+        if f"/sites/{SITE_ID}" in target:
+            return site_response
+        if target.startswith(f"GET {DRIVE_PREFIX}?"):
+            return drive_response
+        if request.method == "PUT":
+            return httpx.Response(201, json=_item("probe-1"))
+        if "/versions" in target:
+            return httpx.Response(429, headers={"Retry-After": "0"})  # throttled, every attempt
+        if request.method == "DELETE":
+            return httpx.Response(204)
+        return httpx.Response(404, json={})
+
+    backend = SharePointBackend(
+        SITE_ID,
+        DRIVE_ID,
+        "",
+        FakeTokens(),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        sleep=_no_sleep,
+    )
+    status = await backend.health(probe_write=True)
+    assert status.ok is False
+    assert status.field != FIELD_VERSIONING
+    assert status.detail != VERSIONING_OFF
+
+
 async def test_health_every_stage_reports_a_distinct_field() -> None:
     """Walk every diagnosable stage and check its field is unique.
 
@@ -350,6 +463,14 @@ async def test_health_every_stage_reports_a_distinct_field() -> None:
                 Script()
                 .on(f"/sites/{SITE_ID}", site_ok)
                 .on(DRIVE_PREFIX, httpx.Response(404, json={}))
+            ),
+        ),
+        (
+            "library access forbidden",
+            _backend(
+                Script()
+                .on(f"/sites/{SITE_ID}", site_ok)
+                .on(DRIVE_PREFIX, httpx.Response(403, json={}))
             ),
         ),
         (

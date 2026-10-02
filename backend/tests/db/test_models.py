@@ -4,6 +4,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
+    ACTIVE_STATUSES,
     AuditLog,
     Document,
     DocumentVersion,
@@ -41,6 +42,15 @@ async def test_user_email_is_unique(db: AsyncSession) -> None:
     db.add(_user())
     with pytest.raises(IntegrityError):
         await db.commit()
+
+
+def test_active_statuses_matches_the_frontend_constant() -> None:
+    """No endpoint exposes ``ACTIVE_STATUSES`` to the client: the frontend keeps its own copy
+    (``frontend/src/features/uploads/types.ts``, ``ACTIVE_STATUSES``) that decides whether it
+    subscribes to the event stream at all and when it stops polling. This test is the
+    tripwire — it fails the moment this tuple changes here, so whoever changes it is forced to
+    update the frontend copy (and its own comment) in the same change."""
+    assert ACTIVE_STATUSES == ("uploaded", "converting", "checking", "publishing")
 
 
 async def test_account_type_is_constrained(db: AsyncSession) -> None:

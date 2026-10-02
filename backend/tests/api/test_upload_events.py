@@ -14,7 +14,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from types import TracebackType
 
 from httpx import AsyncClient
-from sqlalchemy import update
+from sqlalchemy import text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agent.fake import FakeAnalyzer, ScriptedVerdict
@@ -68,6 +68,22 @@ def _status(frame: dict[str, str]) -> str:
     return str(json.loads(frame["data"])["status"])
 
 
+def _assert_snapshot_is_last_word(frames: list[dict[str, str]]) -> None:
+    """The connect snapshot must come *after* every replayed row.
+
+    The states are read after the rows, so a transition committing between the two statements
+    is in the snapshot but not in the rows. Sent first, the snapshot would be overwritten by a
+    replay ending on the older status and the client would show a stale value until the next
+    poll; sent last, it is the correction it is meant to be.
+    """
+    positions = [i for i, f in enumerate(frames) if f.get("event") == ITEM_STATUS_EVENT]
+    snapshot = [i for i in positions if "id" not in frames[i]]
+    rows = [i for i in positions if "id" in frames[i]]
+    assert snapshot, "the stream sent no state snapshot"
+    assert min(snapshot) > max(rows, default=-1)
+    assert snapshot == list(range(min(snapshot), min(snapshot) + len(snapshot)))  # contiguous
+
+
 async def _next_frame(stream: AsyncIterator[str], limit: float = 5.0) -> dict[str, str]:
     """The next frame of a stream, failing the test rather than hanging if none arrives."""
     async with asyncio.timeout(limit):
@@ -84,13 +100,15 @@ def _event(upload_id: uuid.UUID, item_id: uuid.UUID, status: str) -> UploadEvent
 
 
 class CountingMaker:
-    """Wraps a sessionmaker so a test can see how many sessions are open at any moment."""
+    """Wraps a sessionmaker so a test can see how many sessions are open at any moment, and at
+    what isolation level each one ran."""
 
     def __init__(self, maker: async_sessionmaker[AsyncSession]) -> None:
         self.maker = maker
         self.opened = 0
         self.closed = 0
         self.max_open = 0
+        self.isolation: list[str] = []
 
     @property
     def open(self) -> int:
@@ -118,6 +136,10 @@ class CountingMaker:
         ) -> None:
             self.counter.closed += 1
             assert self.session is not None
+            if exc_type is None:  # still inside the poll's transaction
+                self.counter.isolation.append(
+                    str(await self.session.scalar(text("SHOW transaction_isolation")))
+                )
             await self.session.close()
 
 
@@ -199,9 +221,10 @@ async def test_settled_upload_replays_everything_and_terminates(
     assert response.headers["x-accel-buffering"] == "no"
     frames = _frames(response.text)
     assert frames[0] == {"retry": "2000"}
-    # The fresh state snapshot comes before any replayed row (controller ruling P5-4a).
+    # The fresh state snapshot is the last word before ``upload.settled`` (rulings P5-4a, P5-6).
+    _assert_snapshot_is_last_word(frames)
     snapshot = _snapshot(frames)
-    assert frames[1]["event"] == ITEM_STATUS_EVENT and "id" not in frames[1]
+    assert frames[-2]["event"] == ITEM_STATUS_EVENT and "id" not in frames[-2]
     assert [s["item_id"] for s in snapshot] == [str(items[0].id)]
     assert [s["status"] for s in snapshot] == ["published"]
     assert snapshot[0]["document_id"] and snapshot[0]["version"] == 1
@@ -241,13 +264,14 @@ async def test_last_event_id_replays_only_later_events_once(
         ).text
     )
     assert [int(f["id"]) for f in _rows(resumed)] == ids[2:]
-    # Every reconnect re-sends the current states first, then only the unseen rows (P5-4a).
+    # Every reconnect replays the unseen rows and then re-sends the current states (P5-6).
     assert [f["event"] for f in resumed if "event" in f] == [
         ITEM_STATUS_EVENT,
         ITEM_STATUS_EVENT,
         ITEM_STATUS_EVENT,
         "upload.settled",
     ]
+    _assert_snapshot_is_last_word(resumed)
     assert [s["status"] for s in _snapshot(resumed)] == ["published"]
     beyond = _frames(
         (
@@ -257,12 +281,14 @@ async def test_last_event_id_replays_only_later_events_once(
         ).text
     )
     assert [f.get("event") for f in beyond] == [None, ITEM_STATUS_EVENT, "upload.settled"]
+    _assert_snapshot_is_last_word(beyond)
     garbage = _frames(
         (
             await editor.get(f"/api/v1/uploads/{upload.id}/events", headers={"Last-Event-ID": "x"})
         ).text
     )
     assert [int(f["id"]) for f in _rows(garbage)] == ids  # unparsable → from the start
+    _assert_snapshot_is_last_word(garbage)
 
 
 async def test_stream_is_authorised_like_get_upload(
@@ -357,6 +383,9 @@ async def test_live_events_are_delivered_as_they_are_committed(
         "published",
     ]
     assert counter.max_open == 1 and counter.open == 0
+    # One snapshot per poll, so a transition committing between the two reads can neither be
+    # skipped nor settle the stream over its own row (controller ruling P5-6).
+    assert set(counter.isolation) == {"repeatable read"}
 
 
 async def test_heartbeat_while_idle_and_close_releases_sessions(
@@ -447,7 +476,11 @@ async def test_a_skipped_event_cannot_leave_the_client_wrong(
 ) -> None:
     """Even with the lag defeated (``event_lag=0``) so the straggler row is skipped for good,
     the client still ends with the true states: the settled frame carries them (P5-4c), and so
-    does the snapshot any reconnect starts with (P5-4a)."""
+    does the snapshot every connect ends with (P5-4a).
+
+    The committing transaction carries both the event row and the item's new status, and a poll
+    reads rows and states in one snapshot, so that row is always delivered before the stream
+    settles (P5-6) — only the straggler held open behind it is lost."""
     owner = await make_user(db, settings)
     project = await make_project(db, settings, taxonomy, owner=owner)
     upload, items, _ = await ingest(
@@ -472,16 +505,17 @@ async def test_a_skipped_event_cannot_leave_the_client_wrong(
     delivered: list[dict[str, str]] = []
     async with db_sessionmaker() as slow, db_sessionmaker() as fast:
         slow.add(_event(upload.id, item_id, "publishing"))
-        await slow.flush()
+        await slow.flush()  # the lower id is allocated but not committed
         fast.add(_event(upload.id, item_id, "needs_confirmation"))
         await fast.execute(
             update(UploadItem).where(UploadItem.id == item_id).values(status="needs_confirmation")
         )
-        await fast.commit()
+        await fast.commit()  # the higher id, and the state change it describes
         delivered.append(await _next_frame(stream))
         await slow.commit()  # too late: the watermark has already moved past this id
     settled = await _next_frame(stream)
+    # The atomically committed row is delivered; the straggler behind it never is.
     assert [_status(f) for f in delivered] == ["needs_confirmation"]
-    assert settled["event"] == "upload.settled"
+    assert settled["event"] == events.SETTLED_EVENT
     states = json.loads(settled["data"])["items"]
     assert [s["status"] for s in states] == ["needs_confirmation"]  # the truth, not the stream

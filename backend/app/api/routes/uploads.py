@@ -200,8 +200,9 @@ async def get_upload(upload_id: uuid.UUID, user: CurrentUser, db: DbSession) -> 
     response_class=StreamingResponse,
     responses={
         200: {
-            "description": "Server-Sent Events: the current `item.status` of every item, then "
-            "`item.status` frames with an `id:`, `: ping` comments, then `upload.settled`.",
+            "description": "Server-Sent Events: `item.status` frames with an `id:` replaying "
+            "everything after `Last-Event-ID`, then the current `item.status` of every item "
+            "without an `id:`, `: ping` comments while idle, then `upload.settled`.",
             "content": {"text/event-stream": {"schema": {"type": "string"}}},
         }
     },

@@ -89,6 +89,18 @@ async def is_settled(db: AsyncSession, upload_id: uuid.UUID) -> bool:
     return not active
 
 
+# The item columns an ``item.status`` payload can carry. Naming them keeps the per-poll read
+# off the wide columns of ``upload_items`` (``conversion_meta``, the staging path, the titles)
+# and off ORM instance construction: the stream runs this query every 0.5 s per listener.
+_STATE_FIELDS = (
+    UploadItem.type_check,
+    UploadItem.check_explanation,
+    UploadItem.suggested_doc_type,
+    UploadItem.final_doc_type,
+    UploadItem.error,
+)
+
+
 async def item_states(db: AsyncSession, upload_id: uuid.UUID) -> list[dict[str, Any]]:
     """The current state of every item of the upload, in the payload shape of an
     ``item.status`` event, oldest item first.
@@ -99,27 +111,30 @@ async def item_states(db: AsyncSession, upload_id: uuid.UUID) -> list[dict[str, 
     the same upload can commit out of allocation order and a reader that has advanced past the
     higher id can miss the lower one. ``stream_upload_events`` sends these states on connect
     and again with ``upload.settled`` so that such a miss can never leave the client wrong.
+
+    One statement, so the statuses that decide ``upload.settled`` and the states that frame
+    carries always come from the same snapshot of the database.
     """
     rows = (
         await db.execute(
-            select(UploadItem, DocumentVersion.document_id, DocumentVersion.version)
+            select(
+                UploadItem.id,
+                UploadItem.status,
+                *_STATE_FIELDS,
+                DocumentVersion.document_id,
+                DocumentVersion.version,
+            )
             .outerjoin(DocumentVersion, DocumentVersion.upload_item_id == UploadItem.id)
             .where(UploadItem.upload_id == upload_id)
             .order_by(UploadItem.created_at, UploadItem.id)
         )
     ).all()
     states: list[dict[str, Any]] = []
-    for item, document_id, version in rows:
-        fields: dict[str, Any] = {
-            "type_check": item.type_check,
-            "check_explanation": item.check_explanation,
-            "suggested_doc_type": item.suggested_doc_type,
-            "final_doc_type": item.final_doc_type,
-            "error": item.error,
-        }
-        if document_id is not None:
-            fields["document_id"], fields["version"] = document_id, version
-        states.append(item_status_payload(item.id, item.status, fields))
+    for row in rows:
+        fields: dict[str, Any] = {column.key: getattr(row, column.key) for column in _STATE_FIELDS}
+        if row.document_id is not None:
+            fields["document_id"], fields["version"] = row.document_id, row.version
+        states.append(item_status_payload(row.id, row.status, fields))
     return states
 
 
@@ -160,8 +175,8 @@ async def stream_upload_events(
     heartbeat_interval: float = HEARTBEAT_INTERVAL,
     event_lag: float = EVENT_LAG,
 ) -> AsyncIterator[str]:
-    """Send the current item states, then the event rows after ``last_event_id``, then poll
-    for new ones until the upload is settled.
+    """Replay the event rows after ``last_event_id``, send the current item states, then
+    poll for new rows until the upload is settled.
 
     Every poll opens and closes its own session, so no connection is held between polls or for
     the lifetime of the stream; a client disconnect cancels the generator at the next ``await``
@@ -170,8 +185,8 @@ async def stream_upload_events(
     Three things together make the client's view correct even though ``events.id`` values are
     allocated before commit and can therefore become visible out of order:
 
-    * the first frames after ``retry:`` are the item states read fresh from the database, so
-      every connect and reconnect starts from the truth rather than from replayed rows;
+    * every connect and reconnect sends the item states read fresh from the database, so the
+      client lands on the truth rather than on whatever the replayed rows happen to say;
     * the watermark ``safe`` — the id below which nothing can still arrive — is advanced only
       past rows first seen at least ``event_lag`` ago, and the ids above it are re-read every
       poll (``sent`` keeps each from being sent twice), so a row that commits late is still
@@ -179,9 +194,13 @@ async def stream_upload_events(
     * ``upload.settled`` carries the final item states, so a row skipped despite all of that
       still cannot leave the client wrong.
 
-    The rows are read *before* the states, so the states are at least as new as the rows: a
-    change that commits between the two statements is reflected in the snapshot that
-    ``upload.settled`` carries even when its event row was not read.
+    Ordering, which is what makes the snapshot a correction rather than a new way to be wrong:
+    a poll reads the rows and the states in one REPEATABLE READ transaction, so the two always
+    describe the same instant, and the snapshot is yielded *after* the rows of that poll (and
+    only once the backlog has drained, so no replayed row ever follows it). The client
+    therefore never sees a state frame that an older replayed row then overwrites, and
+    ``upload.settled`` never ends the stream over an event row that the same poll could not
+    see.
     """
     safe = last_event_id
     delivered = last_event_id
@@ -191,27 +210,34 @@ async def stream_upload_events(
     yield f"retry: {RETRY_MS}\n\n"
     while True:
         async with maker() as db:
+            # One snapshot of the database for both reads. Under READ COMMITTED each statement
+            # takes its own, so a transaction committing between them would be invisible to the
+            # row read and yet visible to the state read — and since an event row and the state
+            # change it describes are written together, a last transition landing in that gap
+            # would settle the stream and close it without ever sending its row.
+            await db.connection(execution_options={"isolation_level": "REPEATABLE READ"})
             rows = await events_after(db, upload_id, safe)
             states = await item_states(db, upload_id)
         settled = not any(state["status"] in ACTIVE_STATUSES for state in states)
         now = time.monotonic()
+        # A full page is backlog, not the tip of the stream: there is more behind it, so these
+        # rows are long committed and the watermark can follow them at once.
+        backlog = len(rows) == EVENT_PAGE
         frames: list[str] = []
-        if not snapshot_sent:
-            snapshot_sent = True
-            frames.extend(sse_frame(ITEM_STATUS_EVENT, state) for state in states)
         for row in rows:
             if row.id in sent:
                 continue
             sent[row.id] = now
             delivered = max(delivered, row.id)
             frames.append(sse_frame(row.type, row.payload, row.id))
+        if not backlog and not snapshot_sent:
+            snapshot_sent = True
+            frames.extend(sse_frame(ITEM_STATUS_EVENT, state) for state in states)
         for frame in frames:
             yield frame
         if frames:
             last_frame = time.monotonic()
-        if len(rows) == EVENT_PAGE:
-            # A full page is backlog, not the tip of the stream: there is more behind it, so
-            # these rows are long committed and the watermark can follow them at once.
+        if backlog:
             safe, sent = rows[-1].id, {}
             continue
         highest = max(sent, default=safe)

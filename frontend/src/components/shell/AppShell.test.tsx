@@ -30,6 +30,7 @@ it("shows the user, the role badge and the admin link for administrators", async
   expect(screen.getByText("Administrator")).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Admin" })).toHaveAttribute("href", "/admin/users");
   expect(screen.getByRole("link", { name: "Projects" })).toHaveAttribute("aria-current", "page");
+  expect(screen.getByRole("link", { name: "My tasks" })).toHaveAttribute("href", "/tasks");
 });
 
 it("hides the admin link from team members and logs out", async () => {

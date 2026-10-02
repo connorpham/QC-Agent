@@ -19,7 +19,10 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const menuId = useId();
-  const links: NavLink[] = [{ href: "/projects", label: m.nav.projects, match: "/projects" }];
+  const links: NavLink[] = [
+    { href: "/projects", label: m.nav.projects, match: "/projects" },
+    { href: "/tasks", label: m.nav.tasks, match: "/tasks" },
+  ];
   if (me.is_admin) links.push({ href: "/admin/users", label: m.nav.admin, match: "/admin" });
   return (
     <div className="min-h-full">

@@ -25,3 +25,4 @@ export const backendEnv: Record<string, string> = {
 
 export const ADMIN_EMAIL = "e2e-admin@example.com";
 export const STATE_FILE = path.join(__dirname, ".state", "admin.json");
+export const SAMPLE_DOCX = path.join(__dirname, ".state", "sample.docx");

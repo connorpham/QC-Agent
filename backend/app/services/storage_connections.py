@@ -17,7 +17,7 @@ from app.db.models import Project, StorageConnection, User
 from app.schemas.storage import GDriveConfig, LocalFsConfig, SharePointConfig
 from app.services import audit
 from app.storage.base import HealthStatus, StorageError
-from app.storage.gdrive import validate_service_account_key
+from app.storage.gdrive import SHARED_CACHE, validate_service_account_key
 from app.storage.select import connection_backend, localfs_root
 
 logger = logging.getLogger(__name__)
@@ -252,6 +252,14 @@ async def update_connection(
     if config is not None:
         connection.config = validate_config(connection.type, config, settings)
         changes["config"] = True
+        # Any cached Google Drive folder id was resolved against the configuration this
+        # connection had before - most importantly, the Shared Drive id. ``FolderCache`` scopes
+        # its keys by connection id (see ``GoogleDriveBackend``), so dropping every entry under
+        # this connection's id forces the next publish to resolve fresh against whatever the
+        # connection now points at, instead of risking a stale id from before the change
+        # (finding 1). This is a no-op for a connection of any other type: nothing is ever
+        # cached under its id in the first place.
+        SHARED_CACHE.invalidate_scope(str(connection.id))
     if secret is not None:
         require_secret(connection.type, secret)
         connection.secret_enc = box.encrypt(secret)

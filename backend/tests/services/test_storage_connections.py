@@ -9,6 +9,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
+from app.core.crypto import SecretBox
 from app.db.models import AuditLog, StorageConnection
 from app.ingestion.taxonomy import Taxonomy
 from app.services.storage_connections import (
@@ -18,9 +19,11 @@ from app.services.storage_connections import (
     default_connection,
     ensure_default_connection,
     require_secret,
+    update_connection,
     validate_config,
 )
 from app.storage.base import StorageError
+from app.storage.gdrive import SHARED_CACHE
 from app.storage.localfs import LocalFsBackend
 from app.storage.select import project_backend
 from tests.factories import make_connection, make_project, make_user
@@ -122,6 +125,36 @@ async def test_a_secret_is_required_for_cloud_types(db: AsyncSession, settings: 
     with pytest.raises(StorageConnectionError, match="service-account key is required"):
         require_secret("gdrive", None)
     require_secret("localfs", None)  # no secret, no complaint
+
+
+async def test_update_connection_invalidates_the_gdrive_folder_cache_on_a_config_change(
+    db: AsyncSession, settings: Settings
+) -> None:
+    """Finding 1's other half: correcting a gdrive connection's configuration (most importantly
+    its Shared Drive id) must drop any folder id cached under this connection's scope, so the
+    next publish resolves fresh instead of risking an id cached against the old drive."""
+    actor = await make_user(db, settings)
+    box = SecretBox(settings.secret_encryption_key)
+    connection = StorageConnection(
+        type="gdrive",
+        name="Customer drive",
+        config={"drive_id": "drive-a"},
+        is_default=False,
+        is_active=True,
+        created_by=actor.id,
+    )
+    db.add(connection)
+    await db.commit()
+    await db.refresh(connection)
+
+    cached_key = f"{connection.id}:drive-a::02-requirements"
+    SHARED_CACHE.put(cached_key, "folder-in-a")
+    assert SHARED_CACHE.get(cached_key) == "folder-in-a"
+
+    await update_connection(
+        db, connection, actor=actor, box=box, settings=settings, config={"drive_id": "drive-b"}
+    )
+    assert SHARED_CACHE.get(cached_key) is None
 
 
 def test_a_malformed_service_account_key_is_refused(settings: Settings) -> None:

@@ -585,6 +585,51 @@ async def test_the_public_health_check_never_writes() -> None:
     assert {request.method for request in script_write.requests} == {"GET"}
 
 
+# -- folder cache scoping (finding 1) ------------------------------------------------------
+
+
+async def test_a_corrected_drive_id_cannot_resolve_a_folder_cached_under_the_old_drive() -> None:
+    """An admin corrects a connection's Shared Drive id after a publish already cached a folder
+    id resolved against the old (wrong) drive. The next resolution, built from the same
+    connection id and root path but the corrected drive id, must ask the new drive fresh - never
+    answer from a cache entry that was populated by a different Shared Drive. Without the drive
+    id inside the cache scope this collides, because the connection id and root path alone are
+    identical before and after the correction."""
+    cache = FolderCache()
+    script_a = Script().on(
+        "GET https://www.googleapis.com/drive/v3/files?",
+        _list([_folder("folder-in-a", "02-requirements")]),
+    )
+    backend_a = GoogleDriveBackend(
+        "drive-a",
+        "",
+        FakeTokens(),
+        scope="conn-x",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(script_a.handler)),
+        cache=cache,
+        sleep=_no_sleep,
+    )
+    folder_in_a = await backend_a._resolver.ensure_folder("02-requirements", root_id="drive-a")
+    assert folder_in_a == "folder-in-a"  # now cached under this connection's scope
+
+    script_b = Script().on(
+        "GET https://www.googleapis.com/drive/v3/files?",
+        _list([_folder("folder-in-b", "02-requirements")]),
+    )
+    backend_b = GoogleDriveBackend(
+        "drive-b",
+        "",
+        FakeTokens(),
+        scope="conn-x",  # same connection, same root path - only the drive id changed
+        client=httpx.AsyncClient(transport=httpx.MockTransport(script_b.handler)),
+        cache=cache,
+        sleep=_no_sleep,
+    )
+    folder_in_b = await backend_b._resolver.ensure_folder("02-requirements", root_id="drive-b")
+    assert folder_in_b == "folder-in-b"  # fetched fresh from drive B
+    assert script_b.requests  # proves a real lookup happened, not a stale cache hit
+
+
 async def test_health_message_never_contains_a_token_or_a_provider_body() -> None:
     script = Script().on(
         f"drives/{DRIVE_ID}", httpx.Response(500, text="Bearer test-token leaked by the provider")

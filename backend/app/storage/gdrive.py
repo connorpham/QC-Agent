@@ -131,7 +131,13 @@ class GoogleDriveBackend:
         self._tokens = tokens
         self._client = client or get_client()
         self._sleep = sleep
-        self._scope = f"{scope}:{self._root_path}"
+        # The Shared Drive id is part of the scope, not just the connection id and root path: an
+        # administrator can correct a connection's drive id after a publish has already cached
+        # folder ids resolved against the old drive. Without the drive id in the key, a lookup
+        # made right after that correction could return a folder id that belongs to the old
+        # (wrong) Shared Drive, and Drive honours a parent id regardless of which drive a request
+        # is scoped to - silently writing into the previous customer's drive (finding 1).
+        self._scope = f"{scope}:{self._drive_id}:{self._root_path}"
         self._resolver = DriveResolver(
             self._client,
             tokens,

@@ -87,3 +87,38 @@ it("sets a default, keeps the default out of reach of Deactivate, and shows a 40
   await userEvent.click(within(oldRow).getByRole("button", { name: "Deactivate" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("cannot be deactivated");
 });
+
+it("shows a location summary per type and the field a failed test blames", async () => {
+  const sharepoint = {
+    id: "c-sp",
+    type: "sharepoint",
+    name: "Acme library",
+    config: { tenant_id: "t", client_id: "c", site_id: "site-value", drive_id: "drive-value" },
+    is_default: false,
+    is_active: true,
+    has_secret: true,
+    created_at: "2026-10-02T10:00:00+00:00",
+    updated_at: "2026-10-02T10:00:00+00:00",
+  };
+  mockFetch([
+    { path: "/api/v1/storage-connections", body: [sharepoint] },
+    {
+      method: "POST",
+      path: "/api/v1/storage-connections/c-sp/test",
+      body: {
+        ok: false,
+        detail:
+          "No access to this site. A Microsoft 365 administrator must grant this application write access to the site (Sites.Selected).",
+        field: "site_id",
+      },
+    },
+  ]);
+  render(<StorageAdmin />);
+  const row = (await screen.findByRole("cell", { name: "Acme library" })).closest("tr")!;
+  expect(within(row).getByText(/drive-value/)).toBeInTheDocument();
+  expect(within(row).queryByText(/^t$/)).toBeNull(); // no tenant or client id in the list
+  await userEvent.click(within(row).getByRole("button", { name: "Test connection" }));
+  const status = await within(row).findByRole("status");
+  expect(status).toHaveTextContent("Sites.Selected");
+  expect(status).toHaveTextContent("Site ID"); // the field at fault, named for the admin
+});

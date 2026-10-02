@@ -181,15 +181,39 @@ export const m = {
     test: "Test connection",
     testOk: "Connection OK",
     testFailed: "Connection failed",
+    location: "Location",
     rootPath: "Root path",
     rootPathHint:
       "Folder for this connection, relative to LOCAL_STORAGE_ROOT on the server ('.' is the storage root itself).",
-    secretField: "Secret (write-only)",
     secretHint: "Stored encrypted and never shown again. Leave empty to keep the current secret.",
+    tenantId: "Tenant ID",
+    tenantIdHint: "The Microsoft Entra ID directory (tenant) ID of the application.",
+    clientId: "Client ID",
+    clientIdHint: "The application (client) ID of the registered Entra ID application.",
+    clientSecret: "Client secret",
+    clientSecretHint:
+      "The Entra ID client secret. Stored encrypted and never shown again. Client secrets expire; Test connection reports an expired one.",
+    siteId: "Site ID",
+    siteIdHint: "The shared SharePoint site all projects live on.",
+    sharePointPrereq:
+      "Before this will work, a Microsoft 365 administrator must grant this application write access to the site (Sites.Selected). This form cannot do that step.",
+    libraryId: "Document library (drive) ID",
+    libraryIdHint:
+      "The document library for this customer, inside the shared site. One connection per customer library.",
+    sharedDriveId: "Shared Drive ID",
+    sharedDriveIdHint: "The Google Shared Drive for this customer.",
+    googleDrivePrereq:
+      "Before this will work, a Google Workspace administrator must add the service account to the Shared Drive as Content manager. This form cannot do that step.",
+    serviceAccountKey: "Service account JSON key",
+    serviceAccountKeyHint:
+      "Paste the whole JSON key file. Stored encrypted and never shown again. The service account must already be a Content manager on the Shared Drive.",
+    secretRequired: (label: string) => `${label} is required.`,
+    testFailedWith: (field: string | null, detail: string) =>
+      field ? `Connection failed — check ${field}: ${detail}` : `Connection failed: ${detail}`,
     typeLabels: {
       localfs: "Local filesystem",
-      sharepoint: "SharePoint / OneDrive (not available yet)",
-      gdrive: "Google Drive (not available yet)",
+      sharepoint: "SharePoint / OneDrive",
+      gdrive: "Google Drive",
     } as Record<string, string>,
     saved: "Connection saved.",
     defaultChanged: "Default connection changed.",

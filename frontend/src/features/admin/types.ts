@@ -5,4 +5,4 @@ export type Connection = components["schemas"]["StorageConnectionOut"];
 export type ConnectionType = components["schemas"]["StorageConnectionCreate"]["type"];
 
 export const CONNECTION_TYPES: ConnectionType[] = ["localfs", "sharepoint", "gdrive"];
-export const AVAILABLE_TYPES: ConnectionType[] = ["localfs"]; // Plan 3b adds the others
+export const AVAILABLE_TYPES: ConnectionType[] = ["localfs", "sharepoint", "gdrive"];

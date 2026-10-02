@@ -34,6 +34,9 @@ export async function signIn(page: Page): Promise<void> {
   // check rejects a repeated step (app/services/mfa.py: _advance_totp_counter). Five wrong codes
   // lock the account for 15 minutes (app/services/auth.py: login_max_failures), so this waits
   // for an unused step before each retry rather than hammering the same one.
+  // This loop's own cap of 3 attempts is safe only because a successful second factor resets
+  // the backend's failure counter (app/services/mfa.py) before it reaches the five-attempt
+  // lockout threshold enforced in backend/app/services/auth.py (login_max_failures).
   let attempts = 0;
   for (;;) {
     attempts += 1;

@@ -42,7 +42,10 @@ export function FrontmatterPanel({
     [m.documents.fmKind, text(frontmatter.kind)],
   ];
   return (
-    <details className="rounded-lg border border-border bg-surface p-3 text-sm">
+    <details
+      className="rounded-lg border border-border bg-surface p-3 text-sm"
+      aria-label={m.documents.details}
+    >
       <summary className="cursor-pointer font-medium">{m.documents.details}</summary>
       <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
         {rows.map(([label, value]) => (

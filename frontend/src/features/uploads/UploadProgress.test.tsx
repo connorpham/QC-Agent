@@ -156,7 +156,7 @@ it("updates a row from an event and retries a failed item", async () => {
     "/documents/d1",
   );
   await userEvent.click(screen.getByRole("button", { name: "Retry" }));
-  expect(f.find("POST", "/api/v1/upload-items/i3/retry")).toBeDefined();
+  await waitFor(() => expect(f.find("POST", "/api/v1/upload-items/i3/retry")).toBeDefined());
   expect(await within(screen.getAllByRole("listitem")[2]).findByText("Queued")).toBeInTheDocument();
 });
 

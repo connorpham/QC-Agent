@@ -50,9 +50,7 @@ test("upload with a chosen type, live progress over SSE, read, download, gap rep
       page.getByText("The system shall allow users to log in with a password and a one-time code."),
     ).toBeVisible();
     await page.getByText("Details").click();
-    // The <details> disclosure (FrontmatterPanel) gets no accessible name from its <summary>
-    // text (role=group, unnamed in the a11y tree), so it is scoped by the native tag instead.
-    const details = page.locator("details", { hasText: "Details" });
+    const details = page.getByRole("group", { name: "Details" });
     await expect(details.getByText("Software Requirements Specification")).toBeVisible();
     await expect(details.getByText("Type check skipped")).toBeVisible();
   });

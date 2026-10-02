@@ -41,6 +41,8 @@ export function uploadMultipart<T = UploadOut>(
       }
     };
     xhr.onerror = () => reject(new Error(m.common.requestFailed));
+    xhr.onabort = () => reject(new Error(m.common.requestFailed));
+    xhr.ontimeout = () => reject(new Error(m.common.requestFailed));
     xhr.send(form);
   });
 }

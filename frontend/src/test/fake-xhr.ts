@@ -9,11 +9,15 @@ export class FakeXHR {
   static instances: FakeXHR[] = [];
   static respondWith: { status: number; body?: unknown } = { status: 200, body: {} };
   static failWithNetworkError = false;
+  static failWithAbort = false;
+  static failWithTimeout = false;
 
   static install(): void {
     FakeXHR.instances = [];
     FakeXHR.respondWith = { status: 200, body: {} };
     FakeXHR.failWithNetworkError = false;
+    FakeXHR.failWithAbort = false;
+    FakeXHR.failWithTimeout = false;
     vi.stubGlobal("XMLHttpRequest", FakeXHR);
   }
 
@@ -25,6 +29,8 @@ export class FakeXHR {
   responseText = "";
   onload: (() => void) | null = null;
   onerror: (() => void) | null = null;
+  onabort: (() => void) | null = null;
+  ontimeout: (() => void) | null = null;
   private progressListeners: ProgressListener[] = [];
   readonly upload = {
     addEventListener: (type: string, listener: ProgressListener) => {
@@ -46,6 +52,14 @@ export class FakeXHR {
     FakeXHR.instances.push(this);
     if (FakeXHR.failWithNetworkError) {
       queueMicrotask(() => this.onerror?.());
+      return;
+    }
+    if (FakeXHR.failWithAbort) {
+      queueMicrotask(() => this.onabort?.());
+      return;
+    }
+    if (FakeXHR.failWithTimeout) {
+      queueMicrotask(() => this.ontimeout?.());
       return;
     }
     for (const listener of this.progressListeners) {

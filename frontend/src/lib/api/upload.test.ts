@@ -47,3 +47,17 @@ it("rejects with the generic request error on a network failure", async () => {
     "The request failed. Try again.",
   );
 });
+
+it("rejects instead of hanging forever when the request is aborted", async () => {
+  FakeXHR.failWithAbort = true;
+  await expect(uploadMultipart("/api/v1/projects/p1/uploads", form())).rejects.toThrow(
+    "The request failed. Try again.",
+  );
+});
+
+it("rejects instead of hanging forever when the request times out", async () => {
+  FakeXHR.failWithTimeout = true;
+  await expect(uploadMultipart("/api/v1/projects/p1/uploads", form())).rejects.toThrow(
+    "The request failed. Try again.",
+  );
+});

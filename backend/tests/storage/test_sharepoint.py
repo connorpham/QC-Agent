@@ -104,6 +104,23 @@ async def test_paths_are_url_encoded_and_rooted_at_the_project_folder() -> None:
     assert " " not in url and "%20" in url
 
 
+async def test_special_characters_are_percent_encoded() -> None:
+    """A literal '#', '%' or ':' in a file name must be percent-encoded - a colon especially,
+    since it is Graph's own addressing delimiter and a literal one would corrupt the path."""
+    script = (
+        Script()
+        .on("PUT", httpx.Response(201, json=_item()))
+        .on("/versions", httpx.Response(200, json={"value": [{"id": "1.0"}]}))
+    )
+    backend = _backend(script)
+    await backend.put_file("01-overview/100% done #2: final.md", b"x", "text/markdown")
+    url = str(script.requests[0].url)
+    assert "%23" in url  # '#'
+    assert "%25" in url  # '%'
+    assert "%3A" in url  # ':'
+    assert "root:/" in url  # the structural delimiters are untouched
+
+
 async def test_unsafe_paths_make_no_request() -> None:
     script = Script()
     backend = _backend(script)
@@ -129,6 +146,19 @@ async def test_small_files_use_a_single_put() -> None:
     assert stored.item_id == "item-1"
     assert stored.version_id == "2.0"  # Graph lists newest first; the newest is what we wrote
     assert stored.web_url == "https://example.invalid/x"
+    assert not [r for r in script.requests if "createUploadSession" in str(r.url)]
+
+
+async def test_file_exactly_at_the_upload_limit_uses_a_single_put() -> None:
+    """The boundary belongs to the simple path: only a file strictly larger than
+    SIMPLE_UPLOAD_LIMIT should go through an upload session."""
+    script = (
+        Script()
+        .on("PUT", httpx.Response(201, json=_item()))
+        .on("/versions", httpx.Response(200, json={"value": [{"id": "1.0"}]}))
+    )
+    backend = _backend(script)
+    await backend.put_file(PATH, b"x" * SIMPLE_UPLOAD_LIMIT, "application/octet-stream")
     assert not [r for r in script.requests if "createUploadSession" in str(r.url)]
 
 
@@ -246,11 +276,14 @@ async def test_health_rejects_a_library_from_another_site() -> None:
         )
     )
     status = await _backend(script).health()
-    assert status.ok is False and status.field == "drive_id"
+    assert status.ok is False and status.field == "drive_id_wrong_site"
     assert "does not belong" in status.detail
 
 
 async def test_health_reports_no_write_permission() -> None:
+    """A 401/403 here must be diagnosed as a write-grant problem, not collapsed into the
+    generic site-access message - a real defect where ``send_with_retry`` auto-raised on
+    401/403 before the adapter ever saw the status, so every stage reported the same thing."""
     script = (
         Script()
         .on(
@@ -264,7 +297,7 @@ async def test_health_reports_no_write_permission() -> None:
         .on("PUT", httpx.Response(403, json={}))
     )
     status = await _backend(script).health()
-    assert status.ok is False and status.field == "site_id"
+    assert status.ok is False and status.field == "write_grant"
     assert "write" in status.detail and "Sites.Selected" in status.detail
 
 
@@ -285,9 +318,81 @@ async def test_health_reports_versioning_disabled() -> None:
         .on("DELETE", httpx.Response(204))
     )
     status = await _backend(script).health()
-    assert status.ok is False and status.field == "drive_id"
+    assert status.ok is False and status.field == "versioning"
     assert "Version history" in status.detail
     assert [r for r in script.requests if r.method == "DELETE"]  # no litter even when it fails
+
+
+async def test_health_every_stage_reports_a_distinct_field() -> None:
+    """Walk every diagnosable stage and check its field is unique.
+
+    This is the test that should have caught fix round 1's defect: ``send_with_retry`` raised
+    ``StorageAuthError`` on every 401/403 before the adapter's own stage code ever saw the
+    response, so the drive-probe and write-probe branches below were unreachable and both fell
+    through to the same generic message - while still reporting a field value that happened to
+    be "correct" by coincidence, which is exactly why asserting on message substrings alone (the
+    previous version of this test) could not catch it. Asserting that two stages never share a
+    field would have failed immediately.
+    """
+    site_ok = httpx.Response(200, json={"id": SITE_ID, "webUrl": "https://c.invalid/sites/qc"})
+    drive_ok = httpx.Response(
+        200, json={"id": DRIVE_ID, "webUrl": "https://c.invalid/sites/qc/Docs"}
+    )
+    scenarios: list[tuple[str, SharePointBackend]] = [
+        ("credentials rejected", _backend(Script(), FakeTokens(fail=True))),
+        (
+            "site not found",
+            _backend(Script().on(f"/sites/{SITE_ID}", httpx.Response(404, json={}))),
+        ),
+        (
+            "library not found",
+            _backend(
+                Script()
+                .on(f"/sites/{SITE_ID}", site_ok)
+                .on(DRIVE_PREFIX, httpx.Response(404, json={}))
+            ),
+        ),
+        (
+            "library belongs to another site",
+            _backend(
+                Script()
+                .on(f"/sites/{SITE_ID}", site_ok)
+                .on(
+                    DRIVE_PREFIX,
+                    httpx.Response(
+                        200, json={"id": DRIVE_ID, "webUrl": "https://c.invalid/sites/other/Docs"}
+                    ),
+                )
+            ),
+        ),
+        (
+            "missing write grant",
+            _backend(
+                Script()
+                .on(f"/sites/{SITE_ID}", site_ok)
+                .on(DRIVE_PREFIX + "?", drive_ok)
+                .on("PUT", httpx.Response(403, json={}))
+            ),
+        ),
+        (
+            "versioning disabled",
+            _backend(
+                Script()
+                .on(f"/sites/{SITE_ID}", site_ok)
+                .on(DRIVE_PREFIX + "?", drive_ok)
+                .on("PUT", httpx.Response(201, json=_item("probe-1")))
+                .on("/versions", httpx.Response(200, json={"value": [{"id": "1.0"}]}))
+                .on("DELETE", httpx.Response(204))
+            ),
+        ),
+    ]
+    fields: list[str | None] = []
+    for name, backend in scenarios:
+        status = await backend.health()
+        assert status.ok is False, f"{name} unexpectedly reported healthy"
+        assert status.field is not None, f"{name} reported no field at all"
+        fields.append(status.field)
+    assert len(set(fields)) == len(fields), f"two stages shared a field: {fields}"
 
 
 async def test_health_cleans_up_its_probe_when_the_second_write_fails() -> None:
@@ -325,7 +430,7 @@ async def test_health_cleans_up_its_probe_when_the_second_write_fails() -> None:
         sleep=_no_sleep,
     )
     status = await backend.health()
-    assert status.ok is False and status.field == "site_id"
+    assert status.ok is False and status.field == "write_grant"
     deletes = [r for r in requests if r.method == "DELETE"]
     assert deletes and "probe-1" in str(deletes[0].url)
 

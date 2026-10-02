@@ -36,6 +36,18 @@ CHUNK_BYTES = 5 * 320 * 1024  # Graph requires a multiple of 320 KiB
 HEALTH_PROBE_NAME = ".qc-agent-health.txt"
 PROBE_CACHE_SECONDS = 600.0
 
+# Field tokens returned on ``HealthStatus.field``. These are diagnosis codes, not strictly the
+# connection's own column names: "library not found" and "library belongs to another site" are
+# both ultimately about the drive id, but they are different faults with different fixes, so
+# they get different codes. Each stage below has exactly one of these, and no two stages share
+# one (see test_health_every_stage_reports_a_distinct_field).
+FIELD_SECRET = "secret"  # noqa: S105 - a diagnosis-code label, not a credential
+FIELD_SITE_ID = "site_id"
+FIELD_DRIVE_ID = "drive_id"
+FIELD_DRIVE_WRONG_SITE = "drive_id_wrong_site"
+FIELD_WRITE_GRANT = "write_grant"
+FIELD_VERSIONING = "versioning"
+
 CREDENTIALS_REJECTED = (
     "The Microsoft 365 credentials were rejected or have expired. Check the tenant id, client "
     "id and client secret, and whether the secret has expired in Entra ID."
@@ -134,7 +146,15 @@ class SharePointBackend:
         full = f"{self._root_path}/{relative}" if self._root_path else relative
         return f"{self._drive}/root:/{quote(full, safe='/')}:"
 
-    async def _send(self, method: str, url: str, *, context: str, **kwargs: Any) -> httpx.Response:
+    async def _send(
+        self,
+        method: str,
+        url: str,
+        *,
+        context: str,
+        auth_raises: bool = True,
+        **kwargs: Any,
+    ) -> httpx.Response:
         headers = {
             "Authorization": f"Bearer {await self._tokens.token()}",
             **kwargs.pop("headers", {}),
@@ -145,6 +165,7 @@ class SharePointBackend:
             policy=GRAPH_POLICY,
             context=context,
             sleep=self._sleep,
+            raise_on_auth_error=auth_raises,
         )
 
     async def _newest_version_id(self, item_id: str, context: str) -> str:
@@ -325,35 +346,37 @@ class SharePointBackend:
         try:
             await self._tokens.token()
         except StorageError as exc:
-            return HealthStatus(ok=False, detail=str(exc), field="secret")
+            return HealthStatus(ok=False, detail=str(exc), field=FIELD_SECRET)
 
         site = await self._quiet("GET", f"{GRAPH}/sites/{self._site_id}?$select=id,webUrl")
         if isinstance(site, HealthStatus):
-            return HealthStatus(ok=False, detail=site.detail, field="site_id")
+            return HealthStatus(ok=False, detail=site.detail, field=None)
         if site.status_code == 404:
-            return HealthStatus(ok=False, detail=SITE_NOT_FOUND, field="site_id")
+            return HealthStatus(ok=False, detail=SITE_NOT_FOUND, field=FIELD_SITE_ID)
         if site.status_code in (401, 403):
-            return HealthStatus(ok=False, detail=NO_GRANT, field="site_id")
+            return HealthStatus(ok=False, detail=NO_GRANT, field=FIELD_SITE_ID)
         if site.status_code >= 400:
             return HealthStatus(
-                ok=False, detail=f"Checking the site failed ({site.status_code}).", field="site_id"
+                ok=False,
+                detail=f"Checking the site failed ({site.status_code}).",
+                field=FIELD_SITE_ID,
             )
         site_url = str(site.json().get("webUrl", "")).rstrip("/")
 
         drive = await self._quiet("GET", f"{self._drive}?$select=id,name,webUrl")
         if isinstance(drive, HealthStatus):
-            return HealthStatus(ok=False, detail=drive.detail, field="drive_id")
+            return HealthStatus(ok=False, detail=drive.detail, field=None)
         if drive.status_code in (403, 404):
-            return HealthStatus(ok=False, detail=LIBRARY_NOT_FOUND, field="drive_id")
+            return HealthStatus(ok=False, detail=LIBRARY_NOT_FOUND, field=FIELD_DRIVE_ID)
         if drive.status_code >= 400:
             return HealthStatus(
                 ok=False,
                 detail=f"Checking the document library failed ({drive.status_code}).",
-                field="drive_id",
+                field=FIELD_DRIVE_ID,
             )
         library_url = str(drive.json().get("webUrl", ""))
         if site_url and not library_url.startswith(site_url):
-            return HealthStatus(ok=False, detail=WRONG_SITE, field="drive_id")
+            return HealthStatus(ok=False, detail=WRONG_SITE, field=FIELD_DRIVE_WRONG_SITE)
 
         return await self._probe_write_and_versioning()
 
@@ -379,14 +402,14 @@ class SharePointBackend:
                     headers={"Content-Type": "text/plain"},
                 )
                 if isinstance(written, HealthStatus):
-                    return HealthStatus(ok=False, detail=written.detail, field="site_id")
+                    return HealthStatus(ok=False, detail=written.detail, field=None)
                 if written.status_code in (401, 403):
-                    return HealthStatus(ok=False, detail=NO_WRITE, field="site_id")
+                    return HealthStatus(ok=False, detail=NO_WRITE, field=FIELD_WRITE_GRANT)
                 if written.status_code >= 400:
                     return HealthStatus(
                         ok=False,
                         detail=f"Writing a test file failed ({written.status_code}).",
-                        field="drive_id",
+                        field=FIELD_DRIVE_ID,
                     )
                 item_id = str(written.json()["id"])
 
@@ -395,17 +418,21 @@ class SharePointBackend:
                 0 if isinstance(versions, HealthStatus) else len(versions.json().get("value", []))
             )
             if count < 2:
-                return HealthStatus(ok=False, detail=VERSIONING_OFF, field="drive_id")
+                return HealthStatus(ok=False, detail=VERSIONING_OFF, field=FIELD_VERSIONING)
             return HealthStatus(ok=True, detail="ok")
         finally:
             if item_id:
                 await self._quiet("DELETE", f"{self._drive}/items/{item_id}")  # best effort
 
     async def _quiet(self, method: str, url: str, **kwargs: Any) -> httpx.Response | HealthStatus:
-        """Send a probe request, turning a storage error into a status instead of raising."""
+        """Send a probe request with ``auth_raises=False``, so a 401/403 comes back as an
+        ordinary response the caller's own stage can inspect and assign its own field to,
+        instead of ``send_with_retry`` raising ``StorageAuthError`` and collapsing every stage
+        into the same generic message. Any other failure (connectivity, retries exhausted)
+        still comes back as a status with no specific field - the caller cannot say more."""
         try:
-            return await self._send(method, url, context="Checking the connection", **kwargs)
-        except StorageAuthError:
-            return HealthStatus(ok=False, detail=NO_GRANT)
+            return await self._send(
+                method, url, context="Checking the connection", auth_raises=False, **kwargs
+            )
         except StorageError as exc:
             return HealthStatus(ok=False, detail=str(exc))

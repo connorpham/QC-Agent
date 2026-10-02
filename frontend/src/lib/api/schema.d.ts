@@ -158,6 +158,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/documents/{document_id}/versions/{version}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Version Content */
+        get: operations["version_content_api_v1_documents__document_id__versions__version__content_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/documents/{document_id}/versions/{version}/markdown": {
         parameters: {
             query?: never;
@@ -489,6 +506,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/upload-limits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Upload Limits
+         * @description The intake limits the upload wizard enforces before sending anything.
+         */
+        get: operations["get_upload_limits_api_v1_upload_limits_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/uploads/{upload_id}": {
         parameters: {
             query?: never;
@@ -498,6 +535,23 @@ export interface paths {
         };
         /** Get Upload */
         get: operations["get_upload_api_v1_uploads__upload_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/uploads/{upload_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Upload Events */
+        get: operations["upload_events_api_v1_uploads__upload_id__events_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -661,6 +715,24 @@ export interface components {
             /** Title */
             title: string;
         };
+        /**
+         * DocumentContentOut
+         * @description One version's converted Markdown split into frontmatter and body (spec 5.3).
+         */
+        DocumentContentOut: {
+            /** Body */
+            body: string;
+            /** Frontmatter */
+            frontmatter: {
+                [key: string]: unknown;
+            };
+            /** Markdown Name */
+            markdown_name: string;
+            /** Original Name */
+            original_name: string | null;
+            /** Version */
+            version: number;
+        };
         /** DocumentOut */
         DocumentOut: {
             /**
@@ -700,6 +772,10 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+            /** Uploaded By Name */
+            uploaded_by_name?: string | null;
+            /** Version Created At */
+            version_created_at?: string | null;
             /** Visibility */
             visibility: string;
         };
@@ -747,6 +823,59 @@ export interface components {
             id: string;
             /** Stage */
             stage: string;
+        };
+        /** GapEntryOut */
+        GapEntryOut: {
+            /** Doc Type */
+            doc_type: string;
+            /** Documents */
+            documents: number;
+            /** Required */
+            required: boolean;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "present" | "stub" | "missing";
+            /** Title */
+            title: string;
+        };
+        /** GapFolderOut */
+        GapFolderOut: {
+            /** Dir */
+            dir: string;
+            /** Doc Types */
+            doc_types: components["schemas"]["GapEntryOut"][];
+            /** Id */
+            id: string;
+            /** Stage */
+            stage: string;
+        };
+        /** GapProjectOut */
+        GapProjectOut: {
+            /** Name */
+            name: string;
+            /** Slug */
+            slug: string;
+        };
+        /** GapReportOut */
+        GapReportOut: {
+            /** Completeness */
+            completeness: number;
+            /** Folders */
+            folders: components["schemas"]["GapFolderOut"][];
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            project: components["schemas"]["GapProjectOut"];
+            /** Qc Agent */
+            qc_agent: number;
+            /** Required Present */
+            required_present: number;
+            /** Required Total */
+            required_total: number;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -1112,6 +1241,20 @@ export interface components {
             visibility: string;
             /** Warnings */
             warnings: string[];
+        };
+        /**
+         * UploadLimitsOut
+         * @description What the wizard checks before sending a byte; mirrors the server's intake limits.
+         */
+        UploadLimitsOut: {
+            /** Allowed Extensions */
+            allowed_extensions: string[];
+            /** Max Batch Mb */
+            max_batch_mb: number;
+            /** Max File Mb */
+            max_file_mb: number;
+            /** Zip Max Entries */
+            zip_max_entries: number;
         };
         /** UploadOut */
         UploadOut: {
@@ -1502,6 +1645,38 @@ export interface operations {
             };
         };
     };
+    version_content_api_v1_documents__document_id__versions__version__content_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                version: number;
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentContentOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     download_markdown_api_v1_documents__document_id__versions__version__markdown_get: {
         parameters: {
             query?: never;
@@ -1807,9 +1982,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["GapReportOut"];
                 };
             };
             /** @description Validation Error */
@@ -2218,6 +2391,26 @@ export interface operations {
             };
         };
     };
+    get_upload_limits_api_v1_upload_limits_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadLimitsOut"];
+                };
+            };
+        };
+    };
     get_upload_api_v1_uploads__upload_id__get: {
         parameters: {
             query?: never;
@@ -2236,6 +2429,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UploadOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_events_api_v1_uploads__upload_id__events_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                "last-event-id"?: string | null;
+            };
+            path: {
+                upload_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Server-Sent Events: `item.status` frames with an `id:` replaying everything after `Last-Event-ID`, then the current `item.status` of every item without an `id:`, `: ping` comments while idle, then `upload.settled`. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
                 };
             };
             /** @description Validation Error */

@@ -6,7 +6,7 @@
 | Date | 2026-10-01 |
 | Author | Connor Pham (TECHVIFY) with Claude |
 | Phase | 1 of 5 — Ingestion & Structure |
-| Revision | v2.1 (2026-10-01): storage configured in the UI by admins, chosen per project by owners, changeable later via migration (8.5). v2 replaces v1 (same day): user selects document type at upload; AI verifies, versions and normalises; SharePoint and Google Drive storage; customers as users; internet hosting with MFA |
+| Revision | v2.2 (2026-10-02): the web UI is responsive and usable on a phone (mobile layout moved into scope); document Markdown is rendered in the browser and must be sanitised, because it comes from customer uploads. v2.1 (2026-10-01): storage configured in the UI by admins, chosen per project by owners, changeable later via migration (8.5). v2 replaces v1 (same day): user selects document type at upload; AI verifies, versions and normalises; SharePoint and Google Drive storage; customers as users; internet hosting with MFA |
 
 ---
 
@@ -64,7 +64,7 @@ This is an SDLC documentation set ordered Why → What → How → Build → Ver
 
 ### 2.2 Out of scope
 
-RAG / Q&A; test artefact generation; content quality review; live import connectors; OCR; SSO; synchronising permissions to SharePoint / Drive; customers opening SharePoint / Drive directly; e-mail notifications; mobile layout; automation test execution.
+RAG / Q&A; test artefact generation; content quality review; live import connectors; OCR; SSO; synchronising permissions to SharePoint / Drive; customers opening SharePoint / Drive directly; e-mail notifications; automation test execution.
 
 ---
 
@@ -528,7 +528,7 @@ Every document endpoint enforces role and visibility; client users receive 404 f
 10. Admin: users; Storage connections (list, create, edit non-secret config, replace secret, set default, deactivate, "Test connection").
 11. Create project dialog: name, client, storage connection dropdown (default preselected), optional root folder.
 
-English UI; strings in one messages file.
+English UI; strings in one messages file. The layout is responsive: every screen is usable on a phone, and reading a document in particular is expected on small screens.
 
 ---
 

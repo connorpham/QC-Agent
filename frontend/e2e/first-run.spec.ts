@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 import { generate } from "otplib";
 import { STATE_FILE } from "./env";
@@ -16,11 +16,13 @@ test("first run: admin signs in, enrols MFA, changes the password, sets up stora
   page,
 }) => {
   const admin = JSON.parse(readFileSync(STATE_FILE, "utf8")) as { email: string; password: string };
+  let totpSecret = "";
 
   await test.step("login and MFA enrolment with recovery codes", async () => {
     await signIn(page, admin.email, admin.password);
     await expect(page.getByRole("heading", { name: "Two-factor authentication" })).toBeVisible();
     const secret = await page.getByLabel("Setup key (if you cannot scan)").inputValue();
+    totpSecret = secret;
     await expect(page.getByAltText("QR code for your authenticator app")).toBeVisible();
     await page.getByLabel("Authentication code").fill(await generate({ secret }));
     await page.getByRole("button", { name: "Confirm" }).click();
@@ -40,6 +42,12 @@ test("first run: admin signs in, enrols MFA, changes the password, sets up stora
     await page.getByRole("button", { name: "Change password" }).click();
     await page.waitForURL("**/projects");
     await expect(page.getByText("Administrator")).toBeVisible();
+    // later spec files sign in with these (the password just changed; the authenticator secret
+    // exists only in this browser session)
+    writeFileSync(
+      STATE_FILE,
+      JSON.stringify({ email: admin.email, password: NEW_PASSWORD, totpSecret }),
+    );
   });
 
   await test.step("admin creates and tests a storage connection", async () => {
@@ -68,6 +76,7 @@ test("first run: admin signs in, enrols MFA, changes the password, sets up stora
     await page.getByRole("button", { name: "Create project" }).click();
     await page.waitForURL(/\/projects\/[0-9a-f-]{36}$/);
     await expect(page.getByRole("heading", { name: "E2E Project" })).toBeVisible();
+    await page.getByRole("tab", { name: "Overview" }).click();
     await expect(page.getByText("E2E storage")).toBeVisible();
     await expect(page.getByText("e2e-project")).toBeVisible();
     await page.getByLabel("Name of the confirming person").fill("Customer Rep");

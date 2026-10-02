@@ -1,7 +1,9 @@
 from app.db.models.audit import AuditLog
 from app.db.models.identity import ACCOUNT_TYPES, AuthSession, User
 from app.db.models.ingestion import (
+    ACTIVE_STATUSES,
     INTENTS,
+    ITEM_STATUS_EVENT,
     ITEM_STATUSES,
     TERMINAL_STATUSES,
     TYPE_CHECKS,
@@ -9,6 +11,7 @@ from app.db.models.ingestion import (
     Document,
     DocumentVersion,
     Upload,
+    UploadEvent,
     UploadItem,
 )
 from app.db.models.projects import (
@@ -23,9 +26,11 @@ from app.db.models.storage import STORAGE_TYPES, StorageConnection
 
 __all__ = [
     "ACCOUNT_TYPES",
+    "ACTIVE_STATUSES",
     "EDITOR_ROLES",
     "INTENTS",
     "INTERNAL_ROLES",
+    "ITEM_STATUS_EVENT",
     "ITEM_STATUSES",
     "PROJECT_ROLES",
     "STORAGE_TYPES",
@@ -41,6 +46,7 @@ __all__ = [
     "ProjectMember",
     "StorageConnection",
     "Upload",
+    "UploadEvent",
     "UploadItem",
     "User",
 ]

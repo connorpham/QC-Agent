@@ -39,4 +39,9 @@ cd frontend && pnpm e2e        # Playwright against a disposable database (needs
 
 After changing any API model or route: `cd backend && uv run python -m app.openapi_export ../frontend/openapi.json && cd ../frontend && pnpm api:generate`, and commit both generated files.
 
+## What the UI offers
+
+- Admin users and storage settings
+- Upload wizard with live progress (Server-Sent Events), My tasks and type confirmation, document browser with in-browser Markdown, versions and downloads, gap report (Plan 5)
+
 CI (`.github/workflows/ci.yml`) runs the backend gates, the frontend gates, the end-to-end suite and a gitleaks scan on every pull request.

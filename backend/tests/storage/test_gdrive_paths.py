@@ -2,6 +2,8 @@
 module is where that mismatch is resolved; nothing else in the adapter speaks Drive's query
 language."""
 
+import json
+
 import httpx
 import pytest
 
@@ -20,6 +22,46 @@ ROOT = "root-folder-id"
 class FakeTokens:
     async def token(self) -> str:
         return "test-token"
+
+
+def _extract_parent(query: str) -> str:
+    """The parent id quoted immediately before the ``' in parents`` marker.
+
+    Found by locating that fixed marker and walking back to the nearest quote, not by a fixed
+    split position, so this keeps working however the query's clauses are ordered.
+    """
+    marker = "' in parents"
+    if marker not in query:
+        return ""
+    marker_at = query.index(marker)
+    quote_at = query.rfind("'", 0, marker_at)
+    return query[quote_at + 1 : marker_at]
+
+
+def _extract_name_literal(query: str) -> str:
+    """The (unescaped) value of the ``name = '...'`` clause, honouring the escaper's own rules.
+
+    Scans forward from the opening quote, treating a backslash as escaping the next character
+    (matching ``escape_query_value``), and stops at the first quote that is not escaped. A naive
+    ``split("'")`` would stop at an escaped quote inside the value itself.
+    """
+    marker = "name = '"
+    if marker not in query:
+        return ""
+    start = query.index(marker) + len(marker)
+    chars: list[str] = []
+    i = start
+    while i < len(query):
+        char = query[i]
+        if char == "\\" and i + 1 < len(query):
+            chars.append(query[i + 1])
+            i += 2
+            continue
+        if char == "'":
+            break
+        chars.append(char)
+        i += 1
+    return "".join(chars)
 
 
 class Drive:
@@ -46,12 +88,12 @@ class Drive:
         assert request.url.params["corpora"] == "drive"
         assert request.url.params["supportsAllDrives"] == "true"
         assert request.url.params["includeItemsFromAllDrives"] == "true"
-        parent = query.split("'")[1] if "' in parents" in query else ""
-        name = query.split("name = '")[1].split("'")[0] if "name = '" in query else ""
+        parent = _extract_parent(query)
+        name = _extract_name_literal(query)
         matches = [
             {"id": i, "name": n, "mimeType": m}
             for i, n, m in self.items.get(parent, [])
-            if n == name.replace("\\'", "'").replace("\\\\", "\\")
+            if n == name
         ]
         return httpx.Response(200, json={"files": matches[:2], "incompleteSearch": False})
 
@@ -199,7 +241,11 @@ async def test_ensure_folder_creates_missing_segments_only() -> None:
     assert len(drive.created) == 1  # 05-testing existed; only test-reports was created
     url, body = drive.created[0]
     assert "supportsAllDrives=true" in url
-    assert '"parents": ["f-test"]' in body.replace("'", '"') or '"f-test"' in body
+    assert json.loads(body) == {
+        "name": "test-reports",
+        "mimeType": FOLDER_MIME,
+        "parents": ["f-test"],
+    }
 
 
 async def test_resolver_never_leaves_the_root() -> None:
@@ -218,3 +264,54 @@ async def test_a_file_where_a_folder_is_expected_is_not_found() -> None:
     resolver = _resolver(drive)
     with pytest.raises(StorageNotFound):
         await resolver.resolve("02-requirements/srs--demo.md", root_id=ROOT)
+
+
+async def test_duplicate_folder_appearing_after_cache_is_caught_on_refetch() -> None:
+    """A folder id cached from a clean resolution must not mask a duplicate introduced later.
+
+    The first resolution caches "02-requirements" -> "f-req" after seeing a single match. A
+    second folder with the same name then appears in Drive. A forced refetch (``forget``) must
+    not silently keep using the stale cached id nor silently pick the new one: it must see both
+    and raise, exactly as a first-time resolution would.
+    """
+    drive = Drive()
+    drive.add(ROOT, "f-req", "02-requirements")
+    drive.add("f-req", "file-1", "srs--demo.md", "text/markdown")
+    cache = FolderCache()
+    resolver = _resolver(drive, cache)
+    entry = await resolver.resolve("02-requirements/srs--demo.md", root_id=ROOT)
+    assert entry.id == "file-1"  # "02-requirements" -> "f-req" is now cached
+    drive.add(ROOT, "f-req-2", "02-requirements")  # a second folder appears with the same name
+    resolver.forget("02-requirements")
+    with pytest.raises(StorageAmbiguousPath, match="02-requirements"):
+        await resolver.resolve("02-requirements/srs--demo.md", root_id=ROOT)
+
+
+async def test_hostile_name_is_escaped_in_the_request_sent() -> None:
+    """A quote and a backslash in a name must not be able to change the meaning of the query.
+
+    Asserts on the actual request sent to Drive (not just the standalone escaper), so a future
+    change that escapes the wrong value, or escapes it in the wrong place, is caught.
+    """
+    hostile = "it's a \\trap"
+    drive = Drive()
+    drive.add(ROOT, "real-id", hostile, "text/markdown")
+    drive.add(ROOT, "decoy-id", "it")  # what a naive, unescaped query would truncate the name to
+    resolver = _resolver(drive)
+    entry = await resolver.find_child(ROOT, hostile)
+    assert entry is not None
+    assert entry.id == "real-id"
+    sent = drive.queries[-1]
+    assert f"name = '{escape_query_value(hostile)}'" in sent
+
+
+def test_invalidate_scope_drops_only_its_scope() -> None:
+    """Clearing one connection's cache must not touch another's entries."""
+    cache = FolderCache()
+    cache.put("conn-a:02-requirements", "a-req")
+    cache.put("conn-a:05-testing", "a-test")
+    cache.put("conn-b:02-requirements", "b-req")
+    cache.invalidate_scope("conn-a")
+    assert cache.get("conn-a:02-requirements") is None
+    assert cache.get("conn-a:05-testing") is None
+    assert cache.get("conn-b:02-requirements") == "b-req"

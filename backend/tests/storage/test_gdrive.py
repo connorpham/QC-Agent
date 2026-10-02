@@ -42,8 +42,29 @@ class FakeTokens:
         return "test-token"
 
 
+def _is_drive_chunk_upload(request: httpx.Request) -> bool:
+    """The one request any test in this file is allowed to send without
+    ``supportsAllDrives=true``: the PUT of file bytes to the resumable session URL Drive hands
+    back from the request that started the session. That URL already carries the Shared Drive
+    context (and Drive's resumable protocol takes no query parameters on the chunk PUT itself),
+    so this is a real exemption, not a gap.
+
+    Identified by the ``upload_id`` query parameter Drive puts on every session URL it issues —
+    deliberately not by HTTP method, since excluding a method is exactly what let the original
+    bug (a PATCH missing the flag) hide inside a per-test assertion.
+    """
+    return "upload_id=" in str(request.url)
+
+
 class Script:
-    """Records every request and replies from a list of (predicate, response) rules."""
+    """Records every request and replies from a list of (predicate, response) rules.
+
+    Also enforces, for every request any test in this file sends, that it stays scoped to the
+    configured Shared Drive via ``supportsAllDrives=true`` (the one exemption is
+    ``_is_drive_chunk_upload``). The check lives here — where every Drive request passes through
+    in tests — rather than as an assertion inside one test, so a new adapter method cannot
+    quietly escape it just because the test that exercises it doesn't happen to check.
+    """
 
     def __init__(self) -> None:
         self.rules: list[tuple[object, httpx.Response]] = []
@@ -55,6 +76,10 @@ class Script:
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
+        if not _is_drive_chunk_upload(request):
+            assert "supportsAllDrives=true" in str(request.url), (
+                f"missing supportsAllDrives=true on {request.method} {request.url}"
+            )
         target = f"{request.method} {request.url}"
         for match, response in self.rules:
             if isinstance(match, str) and match in target:
@@ -148,7 +173,8 @@ async def test_put_file_creates_folders_and_uploads_multipart() -> None:
     uploads = [r for r in script.requests if "/upload/drive/v3/files" in str(r.url)]
     assert len(uploads) == 1
     assert "uploadType=multipart" in str(uploads[0].url)
-    assert all("supportsAllDrives=true" in str(r.url) for r in script.requests)
+    # supportsAllDrives=true on every request (except the resumable chunk PUT) is enforced
+    # globally by Script.handler, not by an assertion local to this test.
 
 
 async def test_every_request_stays_inside_the_configured_drive() -> None:
@@ -324,6 +350,51 @@ async def test_versions_are_listed_oldest_first() -> None:
     assert [v.version_id for v in versions] == ["r1", "r2"]
     assert versions[0].modified_at < versions[1].modified_at
     assert all(v.size == 2 for v in versions)
+
+
+async def test_get_version_downloads_a_specific_revision() -> None:
+    script = (
+        Script()
+        .on("%2702-requirements%27", _list([_folder("f-req", "02-requirements")]))
+        .on(
+            "GET https://www.googleapis.com/drive/v3/files?",
+            _list(
+                [
+                    {
+                        "id": "file-1",
+                        "name": "srs--customer-portal.docx",
+                        "mimeType": "application/octet-stream",
+                    }
+                ]
+            ),
+        )
+        .on("/revisions/r1?", httpx.Response(200, content=b"old content"))
+    )
+    backend = _backend(script)
+    assert await backend.get_version(PATH, "r1") == b"old content"
+
+
+async def test_get_version_missing_revision_raises_not_found() -> None:
+    script = (
+        Script()
+        .on("%2702-requirements%27", _list([_folder("f-req", "02-requirements")]))
+        .on(
+            "GET https://www.googleapis.com/drive/v3/files?",
+            _list(
+                [
+                    {
+                        "id": "file-1",
+                        "name": "srs--customer-portal.docx",
+                        "mimeType": "application/octet-stream",
+                    }
+                ]
+            ),
+        )
+        .on("/revisions/does-not-exist?", httpx.Response(404, json={"error": {"code": 404}}))
+    )
+    backend = _backend(script)
+    with pytest.raises(StorageNotFound):
+        await backend.get_version(PATH, "does-not-exist")
 
 
 async def test_missing_file_raises_not_found() -> None:

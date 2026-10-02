@@ -187,7 +187,12 @@ class GoogleDriveBackend:
 
     @staticmethod
     def _keep_forever(path: str) -> bool:
-        return not any(path == e or path.startswith(e) for e in KEEP_FOREVER_EXEMPT)
+        # An entry with a trailing slash is a folder prefix (e.g. "_reports/"); anything else is
+        # an exact relative path (e.g. "project.yaml"), matched whole so "project.yamlx" is not
+        # caught by a bare prefix check.
+        return not any(
+            path.startswith(e) if e.endswith("/") else path == e for e in KEEP_FOREVER_EXEMPT
+        )
 
     def note_keep_forever_limit(self, path: str, count: int) -> None:
         """Remember that ``path`` has reached Drive's keepForever cap, for ``health()``.
@@ -319,7 +324,7 @@ class GoogleDriveBackend:
             "PATCH",
             f"{API}/files/{file_id}/revisions/{revision_id}",
             context=context,
-            params={"fields": "id,keepForever"},
+            params={"fields": "id,keepForever", "supportsAllDrives": "true"},
             json={"keepForever": True},
         )
         if response.status_code == 403:
@@ -360,7 +365,11 @@ class GoogleDriveBackend:
             "GET",
             f"{API}/files/{entry.id}/revisions",
             context=context,
-            params={"fields": "revisions(id,size,modifiedTime,keepForever)", "pageSize": "1000"},
+            params={
+                "fields": "revisions(id,size,modifiedTime,keepForever)",
+                "pageSize": "1000",
+                "supportsAllDrives": "true",
+            },
         )
         raise_for_storage(response, context=context)
         revisions = response.json().get("revisions", [])
@@ -384,7 +393,7 @@ class GoogleDriveBackend:
             "GET",
             f"{API}/files/{entry.id}/revisions/{version_id}",
             context=context,
-            params={"alt": "media"},
+            params={"alt": "media", "supportsAllDrives": "true"},
         )
         if response.status_code == 404:
             raise StorageNotFound(f"Version not found: {version_id}")

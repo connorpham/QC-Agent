@@ -15,6 +15,7 @@ from app.storage.base import (
 )
 from app.storage.gdrive import (
     KEEP_FOREVER_LIMIT,
+    MULTIPART_LIMIT,
     GoogleDriveBackend,
     validate_service_account_key,
 )
@@ -147,9 +148,7 @@ async def test_put_file_creates_folders_and_uploads_multipart() -> None:
     uploads = [r for r in script.requests if "/upload/drive/v3/files" in str(r.url)]
     assert len(uploads) == 1
     assert "uploadType=multipart" in str(uploads[0].url)
-    assert all(
-        "supportsAllDrives=true" in str(r.url) for r in script.requests if r.method != "PATCH"
-    )
+    assert all("supportsAllDrives=true" in str(r.url) for r in script.requests)
 
 
 async def test_every_request_stays_inside_the_configured_drive() -> None:
@@ -173,6 +172,30 @@ async def test_every_request_stays_inside_the_configured_drive() -> None:
         drive_param = request.url.params.get("driveId")
         assert drive_param in (None, DRIVE_ID)
         assert "drives/" not in str(request.url) or f"drives/{DRIVE_ID}" in str(request.url)
+
+
+async def test_a_file_of_exactly_the_multipart_limit_still_uses_multipart() -> None:
+    """The boundary is inclusive: MULTIPART_LIMIT bytes is still small enough for multipart."""
+    script = (
+        Script()
+        .on("GET https://www.googleapis.com/drive/v3/files?", _list([]))
+        .on(
+            "POST https://www.googleapis.com/drive/v3/files?",
+            httpx.Response(200, json={"id": "f-1"}),
+        )
+        .on(
+            "uploadType=multipart",
+            httpx.Response(200, json={"id": "f-1", "headRevisionId": "r1"}),
+        )
+        .on("/revisions/", httpx.Response(200, json={"id": "r1", "keepForever": True}))
+    )
+    backend = _backend(script)
+    stored = await backend.put_file(PATH, b"x" * MULTIPART_LIMIT, "application/octet-stream")
+    assert stored.item_id and stored.version_id
+    uploads = [r for r in script.requests if "/upload/drive/v3/files" in str(r.url)]
+    assert len(uploads) == 1
+    assert "uploadType=multipart" in str(uploads[0].url)
+    assert not any("uploadType=resumable" in str(r.url) for r in script.requests)
 
 
 async def test_large_files_use_a_resumable_upload() -> None:
@@ -248,6 +271,26 @@ async def test_keep_forever_is_not_set_on_reports_or_project_yaml() -> None:
     await backend.put_file("_reports/gap-report.md", b"# gaps", "text/markdown")
     await backend.put_file("project.yaml", b"name: demo", "text/yaml")
     assert not [r for r in script.requests if "/revisions/" in str(r.url)]
+
+
+async def test_keep_forever_exemption_matches_project_yaml_exactly() -> None:
+    """A path that merely starts with "project.yaml" is a different file and is not exempt."""
+    script = (
+        Script()
+        .on("GET https://www.googleapis.com/drive/v3/files?", _list([]))
+        .on(
+            "POST https://www.googleapis.com/drive/v3/files?",
+            httpx.Response(200, json={"id": "f-1"}),
+        )
+        .on(
+            "uploadType=multipart",
+            httpx.Response(200, json={"id": "f-1", "headRevisionId": "r1"}),
+        )
+        .on("/revisions/", httpx.Response(200, json={"id": "r1", "keepForever": True}))
+    )
+    backend = _backend(script)
+    await backend.put_file("project.yamlx", b"not actually the project file", "text/yaml")
+    assert [r for r in script.requests if "/revisions/" in str(r.url)]
 
 
 async def test_versions_are_listed_oldest_first() -> None:

@@ -207,6 +207,27 @@ async def test_credential_statuses_raise_storage_auth_error(status: int) -> None
             )
 
 
+@pytest.mark.parametrize("status", [401, 403])
+async def test_raise_on_auth_error_false_returns_the_response_instead(status: int) -> None:
+    """A staged health probe needs to inspect a 401/403 itself, not have it raised away."""
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json={"error": {"message": "nope"}})
+
+    clock = Clock()
+    async with _client(handler) as client:
+        response = await send_with_retry(
+            client,
+            _builder(client),
+            policy=GRAPH_POLICY,
+            context="probe",
+            sleep=clock,
+            raise_on_auth_error=False,
+        )
+    assert response.status_code == status
+    assert clock.slept == []
+
+
 async def test_error_message_never_contains_the_response_body() -> None:
     """Provider bodies can echo request headers, so they never reach a message a user sees."""
     secret = "super-secret-token-value"

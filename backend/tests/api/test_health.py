@@ -1,16 +1,31 @@
 from collections.abc import AsyncIterator
 from typing import Any
 
+import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.core.config import Settings
 from app.db.session import get_session
 from app.main import create_app
+from app.services import storage_health
+
+
+@pytest.fixture(autouse=True)
+def _clear_storage_health_cache() -> None:
+    storage_health.reset_cache()
+
+
+class _EmptyScalars:
+    def all(self) -> list[Any]:
+        return []
 
 
 class _OkSession:
     async def execute(self, *_args: Any, **_kwargs: Any) -> None:
         return None
+
+    async def scalars(self, *_args: Any, **_kwargs: Any) -> _EmptyScalars:
+        return _EmptyScalars()
 
 
 class _BrokenSession:
@@ -34,14 +49,17 @@ async def test_health_ok() -> None:
     async with _client_with(_OkSession()) as client:
         response = await client.get("/api/v1/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "checks": {"database": "ok"}}
+    assert response.json() == {"status": "ok", "checks": {"database": "ok", "storage": "ok"}}
 
 
 async def test_health_reports_database_failure() -> None:
     async with _client_with(_BrokenSession()) as client:
         response = await client.get("/api/v1/health")
     assert response.status_code == 503
-    assert response.json() == {"status": "degraded", "checks": {"database": "error"}}
+    assert response.json() == {
+        "status": "degraded",
+        "checks": {"database": "error", "storage": "skipped"},
+    }
 
 
 async def test_state_changing_request_without_csrf_header_is_rejected() -> None:
@@ -69,3 +87,44 @@ async def test_api_docs_can_be_exposed() -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as c:
         assert (await c.get("/openapi.json")).status_code == 200
         assert (await c.get("/docs")).status_code == 200
+
+
+async def test_health_reports_storage_without_any_detail(monkeypatch: Any) -> None:
+    """Anonymous callers learn that storage is unhealthy, never which one or why."""
+    from app.api.routes import health as health_route
+
+    async def failing(*_args: Any, **_kwargs: Any) -> str:
+        return "error"
+
+    monkeypatch.setattr(health_route, "storage_check", failing)
+    async with _client_with(_OkSession()) as client:
+        response = await client.get("/api/v1/health")
+    assert response.status_code == 503
+    assert response.json() == {
+        "status": "degraded",
+        "checks": {"database": "ok", "storage": "error"},
+    }
+    body = response.text
+    for leak in ("sharepoint", "gdrive", "drive_id", "tenant", "site", "secret", "Bearer"):
+        assert leak not in body
+
+
+async def test_health_is_ok_when_storage_is_ok(monkeypatch: Any) -> None:
+    from app.api.routes import health as health_route
+
+    async def healthy(*_args: Any, **_kwargs: Any) -> str:
+        return "ok"
+
+    monkeypatch.setattr(health_route, "storage_check", healthy)
+    async with _client_with(_OkSession()) as client:
+        response = await client.get("/api/v1/health")
+    assert response.status_code == 200
+    assert response.json()["checks"]["storage"] == "ok"
+
+
+async def test_health_skips_storage_when_the_database_is_down(monkeypatch: Any) -> None:
+    """Without a database there are no connection rows to check; say so, do not guess."""
+    async with _client_with(_BrokenSession()) as client:
+        response = await client.get("/api/v1/health")
+    assert response.status_code == 503
+    assert response.json()["checks"] == {"database": "error", "storage": "skipped"}

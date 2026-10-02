@@ -296,7 +296,7 @@ async def test_health_reports_no_write_permission() -> None:
         )
         .on("PUT", httpx.Response(403, json={}))
     )
-    status = await _backend(script).health()
+    status = await _backend(script).health(probe_write=True)
     assert status.ok is False and status.field == "write_grant"
     assert "write" in status.detail and "Sites.Selected" in status.detail
 
@@ -317,7 +317,7 @@ async def test_health_reports_versioning_disabled() -> None:
         .on("/versions", httpx.Response(200, json={"value": [{"id": "1.0"}]}))
         .on("DELETE", httpx.Response(204))
     )
-    status = await _backend(script).health()
+    status = await _backend(script).health(probe_write=True)
     assert status.ok is False and status.field == "versioning"
     assert "Version history" in status.detail
     assert [r for r in script.requests if r.method == "DELETE"]  # no litter even when it fails
@@ -388,7 +388,9 @@ async def test_health_every_stage_reports_a_distinct_field() -> None:
     ]
     fields: list[str | None] = []
     for name, backend in scenarios:
-        status = await backend.health()
+        # probe_write=True: this walks the write-grant and versioning stages too, which only
+        # run for the admin-only full probe.
+        status = await backend.health(probe_write=True)
         assert status.ok is False, f"{name} unexpectedly reported healthy"
         assert status.field is not None, f"{name} reported no field at all"
         fields.append(status.field)
@@ -429,7 +431,7 @@ async def test_health_cleans_up_its_probe_when_the_second_write_fails() -> None:
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         sleep=_no_sleep,
     )
-    status = await backend.health()
+    status = await backend.health(probe_write=True)
     assert status.ok is False and status.field == "write_grant"
     deletes = [r for r in requests if r.method == "DELETE"]
     assert deletes and "probe-1" in str(deletes[0].url)
@@ -451,7 +453,7 @@ async def test_health_is_ok_and_cleans_up_its_probe() -> None:
         .on("DELETE", httpx.Response(204))
     )
     backend = _backend(script)
-    assert await backend.health() == HealthStatus(ok=True, detail="ok")
+    assert await backend.health(probe_write=True) == HealthStatus(ok=True, detail="ok")
     assert [r for r in script.requests if r.method == "DELETE"]
 
 
@@ -471,10 +473,60 @@ async def test_health_probe_result_is_cached() -> None:
         .on("DELETE", httpx.Response(204))
     )
     backend = _backend(script)
-    await backend.health()
+    await backend.health(probe_write=True)
     writes = len([r for r in script.requests if r.method == "PUT"])
-    await backend.health()
+    await backend.health(probe_write=True)
     assert len([r for r in script.requests if r.method == "PUT"]) == writes  # no second probe
+
+
+async def test_the_public_health_check_never_writes() -> None:
+    """The unauthenticated ``/health`` endpoint uses ``health()``'s default, ``probe_write=False``.
+    It must never write, create or delete anything in the customer's library - checked here by
+    asserting what requests were actually made, not by excluding one method name: every request
+    the probe issues must be a plain ``GET``."""
+    script = (
+        Script()
+        .on(
+            f"/sites/{SITE_ID}",
+            httpx.Response(200, json={"id": SITE_ID, "webUrl": "https://c.invalid/sites/qc"}),
+        )
+        .on(
+            DRIVE_PREFIX + "?",
+            httpx.Response(200, json={"id": DRIVE_ID, "webUrl": "https://c.invalid/sites/qc/Docs"}),
+        )
+    )
+    backend = _backend(script)
+    status = await backend.health()
+    assert status == HealthStatus(ok=True, detail="ok")
+    assert script.requests  # the probe did run
+    assert {request.method for request in script.requests} == {"GET"}
+
+
+async def test_the_write_probe_requires_explicit_opt_in() -> None:
+    """A read-only check and a full check of the same connection must not share a cache slot:
+    an admin's write probe must still run in full even if the public check already ran and
+    cached an ``ok``, and vice versa."""
+    script = (
+        Script()
+        .on(
+            f"/sites/{SITE_ID}",
+            httpx.Response(200, json={"id": SITE_ID, "webUrl": "https://c.invalid/sites/qc"}),
+        )
+        .on(
+            DRIVE_PREFIX + "?",
+            httpx.Response(200, json={"id": DRIVE_ID, "webUrl": "https://c.invalid/sites/qc/Docs"}),
+        )
+        .on("PUT", httpx.Response(201, json=_item("probe-1")))
+        .on("/versions", httpx.Response(200, json={"value": [{"id": "2.0"}, {"id": "1.0"}]}))
+        .on("DELETE", httpx.Response(204))
+    )
+    backend = _backend(script)
+    await backend.health()  # read-only; cached under its own key
+    assert not [r for r in script.requests if r.method in ("PUT", "DELETE")]
+    status = await backend.health(probe_write=True)
+    assert status == HealthStatus(ok=True, detail="ok")
+    assert [r for r in script.requests if r.method == "PUT"]
+    assert [r for r in script.requests if r.method == "DELETE"]
 
 
 async def test_health_message_never_contains_a_token_or_a_provider_body() -> None:

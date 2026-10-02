@@ -558,6 +558,33 @@ async def test_health_reports_a_file_at_the_keep_forever_limit() -> None:
     assert "keepForever" in status.detail and PATH in status.detail
 
 
+async def test_the_public_health_check_never_writes() -> None:
+    """The unauthenticated ``/health`` endpoint uses ``health()``'s default, ``probe_write=False``
+    - and here, ``probe_write=True`` makes no difference, since Drive's probe never writes to
+    begin with. Pinned by asserting what requests were actually made, not by excluding one
+    method name: every request this probe issues must be a plain ``GET``, in both modes."""
+    script = Script().on(
+        f"drives/{DRIVE_ID}",
+        httpx.Response(
+            200, json={"id": DRIVE_ID, "name": "Customer", "capabilities": {"canAddChildren": True}}
+        ),
+    )
+    status = await _backend(script).health()
+    assert status == HealthStatus(ok=True, detail="ok")
+    assert script.requests  # the probe did run
+    assert {request.method for request in script.requests} == {"GET"}
+
+    script_write = Script().on(
+        f"drives/{DRIVE_ID}",
+        httpx.Response(
+            200, json={"id": DRIVE_ID, "name": "Customer", "capabilities": {"canAddChildren": True}}
+        ),
+    )
+    status = await _backend(script_write).health(probe_write=True)
+    assert status == HealthStatus(ok=True, detail="ok")
+    assert {request.method for request in script_write.requests} == {"GET"}
+
+
 async def test_health_message_never_contains_a_token_or_a_provider_body() -> None:
     script = Script().on(
         f"drives/{DRIVE_ID}", httpx.Response(500, text="Bearer test-token leaked by the provider")

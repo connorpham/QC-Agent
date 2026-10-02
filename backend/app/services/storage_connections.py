@@ -320,9 +320,14 @@ async def set_default(
 async def test_connection(
     db: AsyncSession, connection: StorageConnection, *, actor: User, settings: Settings
 ) -> HealthStatus:
-    """Run the adapter's health check for the connection root; audited either way."""
+    """Run the adapter's full health check for the connection root; audited either way.
+
+    ``probe_write=True``: a human administrator asked for this and is waiting for the answer,
+    so the full staged probe runs, including SharePoint's versioning write-probe. The public,
+    unauthenticated ``/health`` summary never does this (see ``app.services.storage_health``).
+    """
     try:
-        status = await connection_backend(connection, settings).health()
+        status = await connection_backend(connection, settings).health(probe_write=True)
     except StorageError as exc:
         status = HealthStatus(ok=False, detail=str(exc))
     await audit.record(

@@ -53,7 +53,6 @@ it("applies status and changed fields to the matching item only", () => {
     type_check: "skipped",
     check_explanation: "Type check is not available yet; the selected type was kept.",
     document_id: "d1",
-    version: 1,
   });
   expect(next.items[0].status).toBe("published");
   expect(next.items[0].document_id).toBe("d1");

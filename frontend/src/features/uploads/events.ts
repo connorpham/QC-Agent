@@ -10,7 +10,6 @@ export type ItemStatusEvent = {
   final_doc_type?: string | null;
   error?: string | null;
   document_id?: string | null;
-  version?: number | null;
 };
 
 export function parseItemEvent(data: string): ItemStatusEvent | null {
@@ -23,12 +22,12 @@ export function parseItemEvent(data: string): ItemStatusEvent | null {
   }
 }
 
-/** Payload of the `upload.settled` frame: besides `upload_id`/`last_event_id`, it carries the
- * final state of every item (controller ruling P5-4 — event ids are allocated before commit,
- * so a late-committing lower id could otherwise be skipped forever). */
+/** Payload of the `upload.settled` frame: besides `upload_id`, it carries the final state of
+ * every item (controller ruling P5-4 — event ids are allocated before commit, so a
+ * late-committing lower id could otherwise be skipped forever). The frame also carries
+ * `last_event_id`, but no client code reads it, so it is not declared here. */
 export type UploadSettledEvent = {
   upload_id: string;
-  last_event_id?: number | null;
   items?: ItemStatusEvent[];
 };
 

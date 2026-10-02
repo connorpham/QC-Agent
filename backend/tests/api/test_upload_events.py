@@ -227,7 +227,7 @@ async def test_settled_upload_replays_everything_and_terminates(
     assert frames[-2]["event"] == ITEM_STATUS_EVENT and "id" not in frames[-2]
     assert [s["item_id"] for s in snapshot] == [str(items[0].id)]
     assert [s["status"] for s in snapshot] == ["published"]
-    assert snapshot[0]["document_id"] and snapshot[0]["version"] == 1
+    assert snapshot[0]["document_id"] and "version" not in snapshot[0]
     rows = _rows(frames)
     assert [_status(f) for f in rows] == ["converting", "checking", "publishing", "published"]
     ids = [int(f["id"]) for f in rows]

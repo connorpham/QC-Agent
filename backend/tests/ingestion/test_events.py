@@ -89,7 +89,7 @@ async def test_every_transition_writes_one_event_in_order(
     )
     assert version is not None
     assert published.payload["document_id"] == str(version.document_id)
-    assert published.payload["version"] == 1
+    assert "version" not in published.payload  # written by the DB, not echoed on the stream
     publishing = [r for r in rows if r.item_id == srs_id and r.payload["status"] == "publishing"][0]
     assert publishing.payload["type_check"] == "match"  # the verdict travels with that transition
     waiting = [r for r in rows if r.payload["status"] == "needs_confirmation"][0]

@@ -335,7 +335,7 @@ async def publish_item_by_id(
                 item_id,
                 ("publishing",),
                 "published",
-                extra={"document_id": document_id, "version": version.version},
+                extra={"document_id": document_id},
                 error=None,
             ):
                 await audit.record(

@@ -31,7 +31,6 @@ PAYLOAD_FIELDS = frozenset(
         "final_doc_type",
         "error",
         "document_id",
-        "version",
     }
 )
 EVENT_PAGE = 500
@@ -122,7 +121,6 @@ async def item_states(db: AsyncSession, upload_id: uuid.UUID) -> list[dict[str, 
                 UploadItem.status,
                 *_STATE_FIELDS,
                 DocumentVersion.document_id,
-                DocumentVersion.version,
             )
             .outerjoin(DocumentVersion, DocumentVersion.upload_item_id == UploadItem.id)
             .where(UploadItem.upload_id == upload_id)
@@ -133,7 +131,7 @@ async def item_states(db: AsyncSession, upload_id: uuid.UUID) -> list[dict[str, 
     for row in rows:
         fields: dict[str, Any] = {column.key: getattr(row, column.key) for column in _STATE_FIELDS}
         if row.document_id is not None:
-            fields["document_id"], fields["version"] = row.document_id, row.version
+            fields["document_id"] = row.document_id
         states.append(item_status_payload(row.id, row.status, fields))
     return states
 

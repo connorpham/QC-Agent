@@ -132,7 +132,7 @@ class SharePointBackend:
         self._tokens = tokens
         self._client = client or get_client()
         self._sleep = sleep
-        self._probe: tuple[HealthStatus, float] | None = None
+        self._probe: dict[bool, tuple[HealthStatus, float]] = {}
 
     # -- plumbing --------------------------------------------------------------------------
 
@@ -329,20 +329,26 @@ class SharePointBackend:
 
     # -- health ----------------------------------------------------------------------------
 
-    async def health(self) -> HealthStatus:
+    async def health(self, *, probe_write: bool = False) -> HealthStatus:
         """Staged probe, each stage naming the field or the grant at fault (spec 8.5, 8.6).
 
-        The last stage writes a small probe file twice and counts its versions, because Graph
-        v1.0 does not expose a library's versioning setting. The result is cached for ten
-        minutes so repeated checks do not churn the library.
+        ``probe_write`` defaults to ``False``: credentials, site and library reachability only,
+        no request that could change anything in the customer's library. The caller must opt
+        in with ``probe_write=True`` to also run the last stage, which writes a small probe file
+        twice and counts its versions (Graph v1.0 does not expose a library's versioning setting
+        any other way) - that stage is reserved for the admin-only Test connection, where a human
+        asked for the answer and is waiting for it, never for the public, unauthenticated
+        ``/health`` endpoint. The result of each mode is cached separately for ten minutes so
+        repeated checks do not churn the library or re-probe reachability needlessly.
         """
-        if self._probe is not None and self._probe[1] > monotonic():
-            return self._probe[0]
-        status = await self._probe_once()
-        self._probe = (status, monotonic() + PROBE_CACHE_SECONDS)
+        cached = self._probe.get(probe_write)
+        if cached is not None and cached[1] > monotonic():
+            return cached[0]
+        status = await self._probe_once(probe_write=probe_write)
+        self._probe[probe_write] = (status, monotonic() + PROBE_CACHE_SECONDS)
         return status
 
-    async def _probe_once(self) -> HealthStatus:
+    async def _probe_once(self, *, probe_write: bool) -> HealthStatus:
         try:
             await self._tokens.token()
         except StorageError as exc:
@@ -378,6 +384,8 @@ class SharePointBackend:
         if site_url and not library_url.startswith(site_url):
             return HealthStatus(ok=False, detail=WRONG_SITE, field=FIELD_DRIVE_WRONG_SITE)
 
+        if not probe_write:
+            return HealthStatus(ok=True, detail="ok")
         return await self._probe_write_and_versioning()
 
     async def _probe_write_and_versioning(self) -> HealthStatus:

@@ -414,7 +414,7 @@ class GoogleDriveBackend:
         raise_for_storage(response, context=context)
         self._resolver.forget(relative)
 
-    async def health(self) -> HealthStatus:
+    async def health(self, *, probe_write: bool = False) -> HealthStatus:
         """Staged probe: credentials, then the Shared Drive, then write permission (spec 8.5).
 
         Each stage has its own field token, so Test connection can point at the input or the
@@ -422,6 +422,12 @@ class GoogleDriveBackend:
         auto-raise on 401/403 (``raise_on_auth_error=False``): this stage must read the status
         code itself to tell "wrong credentials" apart from "forbidden for this Shared Drive",
         which an exception raised before the response reaches here could not distinguish.
+
+        ``probe_write`` is accepted for symmetry with the SharePoint adapter's ``health``, whose
+        public-vs-admin split it mirrors, but there is nothing to opt into here: every stage below
+        is already a read (``canAddChildren`` is reported by the Shared Drive itself, and
+        ``keep_forever`` reflects state this adapter already holds from earlier uploads), so this
+        probe never writes, creates or deletes anything regardless of the flag.
 
         Field tokens: ``secret`` (credentials rejected), ``drive_id`` (Shared Drive not found),
         ``not_member`` (service account cannot see the Shared Drive at all), ``write_grant``

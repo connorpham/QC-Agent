@@ -4,6 +4,14 @@
 admin-only and lives in ``POST /storage-connections/{id}/test``. The result is cached for a
 minute so an anonymous caller cannot turn one request into one Graph or Drive call per
 connection.
+
+This also calls each adapter's ``health`` with ``probe_write=False`` (the default): a read-only
+liveness check only (mint a token, confirm the configured library or Shared Drive is reachable).
+The full staged probe - which, on SharePoint, writes and deletes a small file to measure whether
+version history is on - is reserved for the admin-only Test connection in
+``app.services.storage_connections.test_connection``, where a human asked for the answer. A
+sixty-second cache bounds the *rate* of even the read-only check; it is not what keeps this
+endpoint from writing into a customer's library - ``probe_write=False`` is what does that.
 """
 
 import asyncio
@@ -35,7 +43,8 @@ def reset_cache() -> None:
 async def _one(connection: StorageConnection, settings: Settings) -> bool:
     try:
         async with asyncio.timeout(PER_CONNECTION_TIMEOUT):
-            status = await connection_backend(connection, settings).health()
+            # Read-only liveness only - never the write-probing full check (see module docstring).
+            status = await connection_backend(connection, settings).health(probe_write=False)
     except (StorageError, TimeoutError, OSError):
         logger.warning("Storage connection %s failed its health check", connection.id)
         return False

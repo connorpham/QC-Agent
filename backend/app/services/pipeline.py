@@ -6,7 +6,7 @@ non-terminal state when the process starts."""
 import asyncio
 import logging
 import uuid
-from collections.abc import Coroutine, Sequence
+from collections.abc import Coroutine, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,11 +17,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agent.analyzer import Analyzer, CheckBatch, CheckItem, ExistingDocument, ItemVerdict
 from app.core.config import Settings
-from app.db.models import Document, Project, Upload, UploadItem, User
+from app.db.models import ACTIVE_STATUSES, Document, Project, Upload, UploadItem, User
 from app.db.session import get_sessionmaker
 from app.ingestion.converters import LOW_TEXT, ConversionError, convert_file
 from app.ingestion.taxonomy import Taxonomy, UnknownDocType
-from app.services import audit
+from app.services import audit, events
 from app.services.publish import (
     MARKDOWN_SUFFIX,
     NO_CHANGE_MESSAGE,
@@ -36,7 +36,6 @@ from app.storage.select import project_backend
 
 logger = logging.getLogger(__name__)
 
-ACTIVE_STATUSES = ("uploaded", "converting", "checking", "publishing")
 LOW_TEXT_EXPLANATION = "The file has little extractable text; the type check was skipped."
 CHECK_FAILED_EXPLANATION = "The type check could not run; the selected type was kept."
 PUBLISH_FAILED = "Publishing failed unexpectedly."
@@ -60,17 +59,33 @@ async def transition(
     item_id: uuid.UUID,
     from_statuses: Sequence[str],
     to_status: str,
+    *,
+    extra: Mapping[str, Any] | None = None,
     **values: Any,
 ) -> bool:
-    """Atomically move an item between states; False when it was not in ``from_statuses``."""
-    moved = await db.scalar(
-        update(UploadItem)
-        .where(UploadItem.id == item_id, UploadItem.status.in_(list(from_statuses)))
-        .values(status=to_status, updated_at=datetime.now(UTC), **values)
-        .returning(UploadItem.id)
-        .execution_options(synchronize_session=False)
+    """Atomically move an item between states and queue the matching ``item.status`` event on
+    the same session; False when it was not in ``from_statuses`` (then nothing is queued).
+    ``extra`` adds payload-only fields such as the published document id."""
+    row = (
+        await db.execute(
+            update(UploadItem)
+            .where(UploadItem.id == item_id, UploadItem.status.in_(list(from_statuses)))
+            .values(status=to_status, updated_at=datetime.now(UTC), **values)
+            .returning(UploadItem.id, UploadItem.upload_id)
+            .execution_options(synchronize_session=False)
+        )
+    ).first()
+    if row is None:
+        return False
+    await events.record_item_status(
+        db,
+        upload_id=row.upload_id,
+        item_id=item_id,
+        status=to_status,
+        **values,
+        **dict(extra or {}),
     )
-    return moved is not None
+    return True
 
 
 async def _fail(
@@ -315,7 +330,14 @@ async def publish_item_by_id(
             return
         document_id = version.document_id  # plain id: a rollback below expires ``version``
         try:
-            if await transition(db, item_id, ("publishing",), "published", error=None):
+            if await transition(
+                db,
+                item_id,
+                ("publishing",),
+                "published",
+                extra={"document_id": document_id, "version": version.version},
+                error=None,
+            ):
                 await audit.record(
                     db,
                     "upload_item.published",
@@ -412,10 +434,14 @@ async def requeue_stale_items(ctx: PipelineContext) -> int:
                 update(UploadItem)
                 .where(UploadItem.status.in_(restart))
                 .values(status="uploaded", updated_at=datetime.now(UTC))
-                .returning(UploadItem.upload_id)
+                .returning(UploadItem.id, UploadItem.upload_id)
                 .execution_options(synchronize_session=False)
             )
         ).all()
+        for item_id, upload_id in rows:
+            await events.record_item_status(
+                db, upload_id=upload_id, item_id=item_id, status="uploaded"
+            )
         publishing = list(
             (
                 await db.scalars(
@@ -426,7 +452,7 @@ async def requeue_stale_items(ctx: PipelineContext) -> int:
             ).all()
         )
         await db.commit()
-    for upload_id in {upload_id for (upload_id,) in rows}:
+    for upload_id in {upload_id for (_item_id, upload_id) in rows}:
         _spawn(run_upload(ctx, upload_id), "upload", upload_id)
     for item_id in publishing:
         _spawn(publish_item_by_id(ctx, maker, item_id), "upload item", item_id)

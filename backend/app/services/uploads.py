@@ -36,7 +36,7 @@ from app.ingestion.intake import (
 from app.ingestion.naming import title_from_filename
 from app.ingestion.taxonomy import Taxonomy, UnknownDocType
 from app.schemas.uploads import UploadItemSpec
-from app.services import audit
+from app.services import audit, events
 from app.services.publish import NO_CHANGE_MESSAGE
 
 
@@ -300,6 +300,14 @@ async def confirm_type(
     )
     item.status = "publishing"
     item.updated_at = datetime.now(UTC)
+    await events.record_item_status(
+        db,
+        upload_id=item.upload_id,
+        item_id=item.id,
+        status="publishing",
+        final_doc_type=item.final_doc_type,
+        type_check=item.type_check,
+    )
     await audit.record(
         db,
         "upload_item.type_confirmed",
@@ -320,6 +328,9 @@ async def retry_item(
     item.status = "uploaded"
     item.error = None
     item.updated_at = datetime.now(UTC)
+    await events.record_item_status(
+        db, upload_id=item.upload_id, item_id=item.id, status="uploaded", error=None
+    )
     await audit.record(
         db,
         "upload_item.retried",

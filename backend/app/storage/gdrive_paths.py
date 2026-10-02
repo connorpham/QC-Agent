@@ -104,8 +104,8 @@ class DriveResolver:
     async def find_child(self, parent_id: str, name: str) -> DriveEntry | None:
         """The single child of ``parent_id`` called ``name``; None when there is none."""
         params = {
-            "q": f"'{parent_id}' in parents and name = '{escape_query_value(name)}' "
-            "and trashed = false",
+            "q": f"'{escape_query_value(parent_id)}' in parents and "
+            f"name = '{escape_query_value(name)}' and trashed = false",
             "driveId": self._drive_id,
             "corpora": "drive",
             "includeItemsFromAllDrives": "true",

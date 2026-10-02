@@ -85,6 +85,55 @@ def _item(item_id: str = "item-1") -> dict[str, object]:
 # -- addressing ----------------------------------------------------------------------------
 
 
+async def test_a_drive_id_containing_a_slash_cannot_retarget_the_request() -> None:
+    """The configuration schema already refuses a drive id with a slash in it (finding 7), but
+    the adapter must not rely on that alone: a hostile drive id reaching this layer by any other
+    path must still be quoted, not interpreted as a path separator that lets it address something
+    other than the configured library."""
+    script = Script().on("PUT", httpx.Response(201, json=_item()))
+    hostile_drive_id = "../another-customers-library"
+    backend = SharePointBackend(
+        SITE_ID,
+        hostile_drive_id,
+        "",
+        FakeTokens(),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(script.handler)),
+        sleep=_no_sleep,
+    )
+    await backend.exists(PATH)  # the script's unmatched-request default (404) is enough here
+    assert script.requests
+    sent = str(script.requests[0].url)
+    # The hostile id must not be able to consume the structural "/drives/" segment of the path
+    # (httpx itself resolves a literal ".." against the URL, so this is a real path-traversal
+    # risk, not just a cosmetic one): the segment right after "/drives/" must be exactly the
+    # quoted id, with no unescaped "/" inside it.
+    assert "/drives/" in sent
+    drive_segment = sent.split("/drives/", 1)[1].split("/root:", 1)[0]
+    assert "/" not in drive_segment
+
+
+async def test_a_site_id_containing_a_slash_cannot_retarget_the_request() -> None:
+    script = (
+        Script()
+        .on("PUT", httpx.Response(201, json=_item()))
+        .on("/versions", httpx.Response(200, json={"value": [{"id": "1.0"}]}))
+    )
+    hostile_site_id = "../another-customers-site"
+    backend = SharePointBackend(
+        hostile_site_id,
+        DRIVE_ID,
+        "",
+        FakeTokens(),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(script.handler)),
+        sleep=_no_sleep,
+    )
+    await backend.health()
+    sent = str(script.requests[0].url)
+    assert "/sites/" in sent
+    site_segment = sent.split("/sites/", 1)[1].split("?", 1)[0]
+    assert "/" not in site_segment
+
+
 async def test_every_request_stays_inside_the_configured_library() -> None:
     """All customers share one site, so a request must never address another library."""
     script = (

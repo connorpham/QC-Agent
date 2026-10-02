@@ -13,6 +13,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -37,6 +38,12 @@ SCOPES = ["https://www.googleapis.com/auth/drive"]
 MULTIPART_LIMIT = 5 * 1024 * 1024
 KEEP_FOREVER_LIMIT = 200
 KEEP_FOREVER_EXEMPT = ("project.yaml", "_reports/")
+# The configuration schema already restricts a Shared Drive id to this character set
+# (app.schemas.storage._SAFE_ID_RE), but it is interpolated straight into a URL path here, so it
+# is quoted again at the point of use rather than trusting that validation was the only way it
+# could ever arrive (finding 7). Characters in this set pass through unescaped; anything else -
+# most importantly "/" - is percent-encoded so it can never be read as a path separator.
+ID_SAFE_CHARS = ",.:!_-"
 SHARED_CACHE = FolderCache()
 
 NOT_A_MEMBER = (
@@ -449,7 +456,7 @@ class GoogleDriveBackend:
         try:
             response = await self._send(
                 "GET",
-                f"{API}/drives/{self._drive_id}",
+                f"{API}/drives/{quote(self._drive_id, safe=ID_SAFE_CHARS)}",
                 context="Checking the Shared Drive",
                 params={"supportsAllDrives": "true", "fields": "id,name,capabilities"},
                 raise_on_auth_error=False,

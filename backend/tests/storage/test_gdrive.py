@@ -585,6 +585,30 @@ async def test_the_public_health_check_never_writes() -> None:
     assert {request.method for request in script_write.requests} == {"GET"}
 
 
+async def test_a_drive_id_containing_a_slash_cannot_retarget_the_health_check() -> None:
+    """The configuration schema already refuses a Shared Drive id with a slash in it (finding 7),
+    but the adapter must not rely on that alone. httpx resolves a literal ".." against the base
+    URL, so an unescaped drive id is a real path-traversal risk here, not a cosmetic one: it can
+    make the request address something other than the configured Shared Drive entirely."""
+    script = Script()  # any request not matched falls through to a plain 404
+    hostile_drive_id = "../another-customers-drive"
+    backend = GoogleDriveBackend(
+        hostile_drive_id,
+        "",
+        FakeTokens(),
+        scope="conn-test",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(script.handler)),
+        cache=FolderCache(),
+        sleep=_no_sleep,
+    )
+    await backend.health()
+    assert script.requests
+    sent = str(script.requests[0].url)
+    assert "/drives/" in sent
+    drive_segment = sent.split("/drives/", 1)[1].split("?", 1)[0]
+    assert "/" not in drive_segment
+
+
 # -- folder cache scoping (finding 1) ------------------------------------------------------
 
 

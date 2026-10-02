@@ -1,3 +1,4 @@
+import re
 import uuid
 from datetime import datetime
 from typing import Any, Literal
@@ -5,6 +6,19 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 StorageType = Literal["localfs", "sharepoint", "gdrive"]
+
+# The site id and the drive id are the one field that separates one customer's document library
+# or Shared Drive from another's. Both are interpolated into a URL path (and a drive id also into
+# Drive's own query language), so a conservative whitelist - rather than merely rejecting a known
+# bad character - is what keeps a pasted value from ever being able to retarget a request. The set
+# covers every shape seen in practice: SharePoint's comma-separated site id
+# ("host,siteCollectionId,webId"), its "b!..." drive id, and Google's plain alphanumeric Shared
+# Drive id (spec 8.2, 8.3; finding 7).
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.,:!_-]*[A-Za-z0-9])?$")
+SAFE_ID_MESSAGE = (
+    "must contain only letters, digits, and the characters . , : ! _ - , and must not start or "
+    "end with one of those"
+)
 
 
 def _clean_name(value: str) -> str:
@@ -20,6 +34,15 @@ def _required(label: str, value: str) -> str:
     cleaned = value.strip()
     if not cleaned:
         raise ValueError(f"A {label} is required.")
+    return cleaned
+
+
+def _safe_id(label: str, value: str) -> str:
+    """Like ``_required``, but also rejects any character outside the conservative whitelist a
+    site id or a drive id is interpolated under (finding 7)."""
+    cleaned = _required(label, value)
+    if not _SAFE_ID_RE.fullmatch(cleaned):
+        raise ValueError(f"The {label} {SAFE_ID_MESSAGE}.")
     return cleaned
 
 
@@ -60,12 +83,12 @@ class SharePointConfig(BaseModel):
     @field_validator("site_id")
     @classmethod
     def _strip_site(cls, value: str) -> str:
-        return _required("site id", value)
+        return _safe_id("site id", value)
 
     @field_validator("drive_id")
     @classmethod
     def _strip_drive(cls, value: str) -> str:
-        return _required("document library drive id", value)
+        return _safe_id("document library drive id", value)
 
 
 class GDriveConfig(BaseModel):
@@ -79,7 +102,7 @@ class GDriveConfig(BaseModel):
     @field_validator("drive_id")
     @classmethod
     def _strip_drive(cls, value: str) -> str:
-        return _required("Shared Drive id", value)
+        return _safe_id("Shared Drive id", value)
 
 
 class StorageConnectionCreate(BaseModel):

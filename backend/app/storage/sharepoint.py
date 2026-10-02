@@ -35,6 +35,14 @@ SIMPLE_UPLOAD_LIMIT = 4 * 1024 * 1024
 CHUNK_BYTES = 5 * 320 * 1024  # Graph requires a multiple of 320 KiB
 HEALTH_PROBE_NAME = ".qc-agent-health.txt"
 PROBE_CACHE_SECONDS = 600.0
+# The configuration schema already restricts a site id and a drive id to this same character set
+# (app.schemas.storage._SAFE_ID_RE), but both are interpolated straight into a URL path here, so
+# they are quoted again at the point of use rather than trusting that validation was the only way
+# either value could ever arrive (finding 7). Characters in this set pass through unescaped;
+# every one of them is a character the site id and drive id formats actually use (SharePoint's
+# comma-separated site id, its "b!..." drive id); anything else - most importantly "/" - is
+# percent-encoded so it can never be read as a path separator.
+ID_SAFE_CHARS = ",.:!_-"
 
 # Field tokens returned on ``HealthStatus.field``. These are diagnosis codes, not strictly the
 # connection's own column names: "library not found" and "library belongs to another site" are
@@ -148,7 +156,7 @@ class SharePointBackend:
 
     @property
     def _drive(self) -> str:
-        return f"{GRAPH}/drives/{self._drive_id}"
+        return f"{GRAPH}/drives/{quote(self._drive_id, safe=ID_SAFE_CHARS)}"
 
     def _address(self, path: str) -> str:
         """``/drives/{id}/root:/{project root}/{path}:`` with every segment URL-encoded."""
@@ -364,7 +372,10 @@ class SharePointBackend:
         except StorageError as exc:
             return HealthStatus(ok=False, detail=str(exc), field=FIELD_SECRET)
 
-        site = await self._quiet("GET", f"{GRAPH}/sites/{self._site_id}?$select=id,webUrl")
+        site_request_url = (
+            f"{GRAPH}/sites/{quote(self._site_id, safe=ID_SAFE_CHARS)}?$select=id,webUrl"
+        )
+        site = await self._quiet("GET", site_request_url)
         if isinstance(site, HealthStatus):
             return HealthStatus(ok=False, detail=site.detail, field=None)
         if site.status_code == 404:

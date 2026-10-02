@@ -118,6 +118,41 @@ def test_gdrive_config_requires_the_shared_drive_id(settings: Settings) -> None:
         validate_config("gdrive", {}, settings)
 
 
+@pytest.mark.parametrize("field", ["site_id", "drive_id"])
+@pytest.mark.parametrize(
+    "hostile",
+    ["a/b", "a?b", "a#b", "a b", "a\\b", "../escape", "a'b", '"', "a%2Fb"],
+)
+def test_sharepoint_rejects_an_id_with_characters_outside_the_safe_set(
+    settings: Settings, field: str, hostile: str
+) -> None:
+    """The site id and the drive id are the one field that separates one customer's document
+    library from another's. A pasted value containing a slash or a question mark must be
+    refused at the form, not silently retarget a request (finding 7)."""
+    config = {**SP_CONFIG, field: hostile}
+    with pytest.raises(StorageConnectionError):
+        validate_config("sharepoint", config, settings)
+
+
+@pytest.mark.parametrize(
+    "safe", ["example.sharepoint.com,33333333-3333-3333-3333-333333333333,4444", "b!a-b_c.d:e"]
+)
+def test_sharepoint_accepts_the_real_shapes_of_id_seen_in_practice(
+    settings: Settings, safe: str
+) -> None:
+    config = {**SP_CONFIG, "site_id": safe, "drive_id": safe}
+    validated = validate_config("sharepoint", config, settings)
+    assert validated["site_id"] == safe and validated["drive_id"] == safe
+
+
+@pytest.mark.parametrize("hostile", ["a/b", "a?b", "a#b", "a b", "a\\b", "../escape"])
+def test_gdrive_rejects_a_drive_id_with_characters_outside_the_safe_set(
+    settings: Settings, hostile: str
+) -> None:
+    with pytest.raises(StorageConnectionError):
+        validate_config("gdrive", {"drive_id": hostile}, settings)
+
+
 async def test_a_secret_is_required_for_cloud_types(db: AsyncSession, settings: Settings) -> None:
     """A connection form that cannot store the secret is not a usable connection."""
     with pytest.raises(StorageConnectionError, match="client secret is required"):

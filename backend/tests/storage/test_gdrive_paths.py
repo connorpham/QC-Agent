@@ -305,6 +305,28 @@ async def test_hostile_name_is_escaped_in_the_request_sent() -> None:
     assert f"name = '{escape_query_value(hostile)}'" in sent
 
 
+async def test_hostile_parent_id_is_escaped_in_the_request_sent() -> None:
+    """The parent id goes into the same Drive query literal as the name (``'{parent}' in
+    parents and name = '{name}'``), but only the name was ever escaped. A parent id reaching
+    this module with a quote in it - the Shared Drive id itself is one, when the project root is
+    the drive's own root - must not be able to change the meaning of the query any more than a
+    hostile name can (finding 7)."""
+    hostile_parent = "it's-a-parent"
+    captured: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request.url.params.get("q", ""))
+        return httpx.Response(200, json={"files": [], "incompleteSearch": False})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    resolver = DriveResolver(
+        client, FakeTokens(), DRIVE_ID, scope="s", cache=FolderCache(), sleep=_no_sleep
+    )
+    await resolver.find_child(hostile_parent, "child")
+    assert captured
+    assert f"'{escape_query_value(hostile_parent)}' in parents" in captured[0]
+
+
 def test_invalidate_scope_drops_only_its_scope() -> None:
     """Clearing one connection's cache must not touch another's entries."""
     cache = FolderCache()

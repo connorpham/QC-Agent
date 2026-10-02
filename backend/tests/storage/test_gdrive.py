@@ -5,11 +5,6 @@ import json
 
 import httpx
 import pytest
-from app.storage.gdrive import (
-    KEEP_FOREVER_LIMIT,
-    GoogleDriveBackend,
-    validate_service_account_key,
-)
 
 from app.storage.base import (
     HealthStatus,
@@ -17,6 +12,11 @@ from app.storage.base import (
     StorageError,
     StorageNotFound,
     StoragePathError,
+)
+from app.storage.gdrive import (
+    KEEP_FOREVER_LIMIT,
+    GoogleDriveBackend,
+    validate_service_account_key,
 )
 from app.storage.gdrive_paths import FOLDER_MIME, FolderCache
 
@@ -135,6 +135,11 @@ async def test_put_file_creates_folders_and_uploads_multipart() -> None:
             "POST https://www.googleapis.com/drive/v3/files?",
             httpx.Response(200, json={"id": "f-1"}),
         )
+        .on(
+            "uploadType=multipart",
+            httpx.Response(200, json={"id": "f-1", "headRevisionId": "r1"}),
+        )
+        .on("/revisions/", httpx.Response(200, json={"id": "r1", "keepForever": True}))
     )
     backend = _backend(script)
     stored = await backend.put_file(PATH, b"v1", "application/octet-stream")
@@ -156,6 +161,11 @@ async def test_every_request_stays_inside_the_configured_drive() -> None:
             "POST https://www.googleapis.com/drive/v3/files?",
             httpx.Response(200, json={"id": "f-1"}),
         )
+        .on(
+            "uploadType=multipart",
+            httpx.Response(200, json={"id": "f-1", "headRevisionId": "r1"}),
+        )
+        .on("/revisions/", httpx.Response(200, json={"id": "r1", "keepForever": True}))
     )
     backend = _backend(script)
     await backend.put_file(PATH, b"v1", "text/plain")
@@ -176,10 +186,17 @@ async def test_large_files_use_a_resumable_upload() -> None:
         )
         .on("uploadType=resumable", httpx.Response(200, headers={"Location": session_url}))
         .on(session_url, httpx.Response(200, json={"id": "f-1", "headRevisionId": "r2"}))
+        .on("/revisions/", httpx.Response(200, json={"id": "r2", "keepForever": True}))
     )
     backend = _backend(script)
-    await backend.put_file(PATH, b"x" * (6 * 1024 * 1024), "application/octet-stream")
+    size = 6 * 1024 * 1024  # larger than MULTIPART_LIMIT outright, not a multiple of any chunk
+    await backend.put_file(PATH, b"x" * size, "application/octet-stream")
     assert any("uploadType=resumable" in str(r.url) for r in script.requests)
+    # The adapter sends the whole file as one PUT (no chunking constant to respect), so the
+    # single Content-Range must cover bytes 0..size-1 of size with no gap and no overlap.
+    puts = [r for r in script.requests if r.method == "PUT"]
+    assert len(puts) == 1
+    assert puts[0].headers["Content-Range"] == f"bytes 0-{size - 1}/{size}"
 
 
 async def test_a_new_version_updates_the_existing_file_id() -> None:
@@ -190,7 +207,9 @@ async def test_a_new_version_updates_the_existing_file_id() -> None:
     script.rules.insert(
         0,
         (
-            "name%20%3D%20%27srs--customer-portal.docx%27",
+            # httpx form-encodes a space in a query value as "+", not "%20"; match the quoted
+            # literal only so this does not depend on that encoding detail.
+            "%27srs--customer-portal.docx%27",
             _list(
                 [
                     {
@@ -220,6 +239,10 @@ async def test_keep_forever_is_not_set_on_reports_or_project_yaml() -> None:
             "POST https://www.googleapis.com/drive/v3/files?",
             httpx.Response(200, json={"id": "f-1"}),
         )
+        .on(
+            "uploadType=multipart",
+            httpx.Response(200, json={"id": "f-1", "headRevisionId": "r1"}),
+        )
     )
     backend = _backend(script)
     await backend.put_file("_reports/gap-report.md", b"# gaps", "text/markdown")
@@ -236,7 +259,9 @@ async def test_versions_are_listed_oldest_first() -> None:
     }
     script = (
         Script()
-        .on("name%20%3D%20%2702-requirements%27", _list([_folder("f-req", "02-requirements")]))
+        # httpx form-encodes a space in a query value as "+", not "%20"; match the quoted
+        # literal only so this does not depend on that encoding detail.
+        .on("%2702-requirements%27", _list([_folder("f-req", "02-requirements")]))
         .on(
             "GET https://www.googleapis.com/drive/v3/files?",
             _list(
@@ -278,7 +303,9 @@ async def test_unsafe_paths_make_no_request() -> None:
 async def test_move_to_trash_sets_trashed() -> None:
     script = (
         Script()
-        .on("name%20%3D%20%2702-requirements%27", _list([_folder("f-req", "02-requirements")]))
+        # httpx form-encodes a space in a query value as "+", not "%20"; match the quoted
+        # literal only so this does not depend on that encoding detail.
+        .on("%2702-requirements%27", _list([_folder("f-req", "02-requirements")]))
         .on(
             "GET https://www.googleapis.com/drive/v3/files?",
             _list(
@@ -296,7 +323,9 @@ async def test_move_to_trash_sets_trashed() -> None:
     backend = _backend(script)
     await backend.move_to_trash(PATH)
     patch = [r for r in script.requests if r.method == "PATCH"][-1]
-    assert b'"trashed": true' in patch.read().replace(b"'", b'"')
+    # json.dumps has no space after the colon by default; check the parsed body rather than
+    # a literal byte string so this does not depend on that formatting detail.
+    assert json.loads(patch.read()) == {"trashed": True}
 
 
 # -- health -------------------------------------------------------------------------------
@@ -316,7 +345,7 @@ async def test_health_diagnoses_each_failure_stage() -> None:
 
     forbidden = _backend(Script().on(f"drives/{DRIVE_ID}", httpx.Response(403, json={})))
     status = await forbidden.health()
-    assert status.ok is False and status.field == "drive_id"
+    assert status.ok is False and status.field == "not_member"
     assert "Content manager" in status.detail  # the membership grant IT must make
 
     read_only = _backend(
@@ -333,8 +362,61 @@ async def test_health_diagnoses_each_failure_stage() -> None:
         )
     )
     status = await read_only.health()
-    assert status.ok is False and status.field == "drive_id"
+    assert status.ok is False and status.field == "write_grant"
     assert "Content manager" in status.detail
+
+
+async def test_health_stages_are_genuinely_distinguishable() -> None:
+    """Guards against the shape of bug where a shared exception path collapses every stage
+    into the same (field, detail), which a substring assertion alone would not catch: two
+    stages could report identically and every ``in`` check above would still pass."""
+    rejected = await _backend(Script(), FakeTokens(fail=True)).health()
+    missing = await _backend(
+        Script().on(f"drives/{DRIVE_ID}", httpx.Response(404, json={}))
+    ).health()
+    forbidden = await _backend(
+        Script().on(f"drives/{DRIVE_ID}", httpx.Response(403, json={}))
+    ).health()
+    read_only = await _backend(
+        Script().on(
+            f"drives/{DRIVE_ID}",
+            httpx.Response(
+                200,
+                json={
+                    "id": DRIVE_ID,
+                    "name": "Customer",
+                    "capabilities": {"canAddChildren": False},
+                },
+            ),
+        )
+    ).health()
+    keep_forever_script = Script().on(
+        f"drives/{DRIVE_ID}",
+        httpx.Response(
+            200, json={"id": DRIVE_ID, "name": "Customer", "capabilities": {"canAddChildren": True}}
+        ),
+    )
+    keep_forever_backend = _backend(keep_forever_script)
+    keep_forever_backend.note_keep_forever_limit(PATH, KEEP_FOREVER_LIMIT)
+    keep_forever = await keep_forever_backend.health()
+
+    fields = [
+        rejected.field,
+        missing.field,
+        forbidden.field,
+        read_only.field,
+        keep_forever.field,
+    ]
+    assert fields == ["secret", "drive_id", "not_member", "write_grant", "keep_forever"]
+    assert len(set(fields)) == len(fields)  # no two stages share a token
+    details = [
+        rejected.detail,
+        missing.detail,
+        forbidden.detail,
+        read_only.detail,
+        keep_forever.detail,
+    ]
+    assert len(set(details)) == len(details)  # and no two stages share a message either
 
 
 async def test_health_is_ok_when_the_drive_is_writable() -> None:
@@ -358,7 +440,7 @@ async def test_health_reports_a_file_at_the_keep_forever_limit() -> None:
     backend = _backend(script)
     backend.note_keep_forever_limit(PATH, KEEP_FOREVER_LIMIT)
     status = await backend.health()
-    assert status.ok is False
+    assert status.ok is False and status.field == "keep_forever"
     assert "keepForever" in status.detail and PATH in status.detail
 
 

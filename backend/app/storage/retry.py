@@ -112,12 +112,19 @@ async def send_with_retry(
     policy: RetryPolicy,
     context: str,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    raise_on_auth_error: bool = True,
 ) -> httpx.Response:
     """Send the request, retrying throttling and transient failures.
 
     ``build_request`` is a factory, not a request, so each attempt gets a fresh body. A response
     that is not retryable is returned as it is: the caller decides whether 404 means
     ``StorageNotFound`` or something else. Exhausting the attempts raises a storage error.
+
+    By default a 401 or 403 is raised as ``StorageAuthError`` before the caller ever sees the
+    response, which is the right thing for an ordinary upload or download. A staged health probe
+    needs to tell "credentials rejected" apart from "forbidden for this specific resource", which
+    requires inspecting the response itself; pass ``raise_on_auth_error=False`` for that one call
+    so the 401/403 comes back as a plain response instead.
     """
     last: httpx.Response | None = None
     for attempt in range(1, policy.max_attempts + 1):
@@ -131,7 +138,7 @@ async def send_with_retry(
             await sleep(backoff_delay(attempt, policy))
             continue
         if not _should_retry(response, policy):
-            if response.status_code in (401, 403):
+            if raise_on_auth_error and response.status_code in (401, 403):
                 raise_for_storage(response, context=context)
             return response
         last = response

@@ -24,7 +24,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings
 from app.db.models import StorageConnection
 from app.services.storage_connections import list_connections
-from app.storage.base import StorageError
 from app.storage.select import connection_backend
 
 logger = logging.getLogger(__name__)
@@ -50,7 +49,12 @@ async def _one(connection: StorageConnection, settings: Settings) -> bool:
         async with asyncio.timeout(PER_CONNECTION_TIMEOUT):
             # Read-only liveness only - never the write-probing full check (see module docstring).
             status = await connection_backend(connection, settings).health(probe_write=False)
-    except (StorageError, TimeoutError, OSError):
+    except Exception:  # noqa: BLE001 - this endpoint's whole job is to answer when storage is
+        # broken, and nothing on this branch has ever run against a real provider: an unexpected
+        # response shape (a corporate proxy or a gateway returning a 2xx carrying HTML, for
+        # instance - .json() on that raises a plain JSONDecodeError, which is neither
+        # StorageError, TimeoutError nor OSError) is the expected case here, not a bug to let
+        # propagate into a 500 (finding 4). Only a connection id is logged, never the body.
         logger.warning("Storage connection %s failed its health check", connection.id)
         return False
     if not status.ok:

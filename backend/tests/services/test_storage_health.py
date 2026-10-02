@@ -1,6 +1,7 @@
 """The public /health storage check: one word, no details, and cached."""
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -64,6 +65,23 @@ async def test_one_failing_connection_makes_the_check_error(
         return Stub(HealthStatus(ok=connection.name != "Broken", detail="x", field="drive_id"))
 
     monkeypatch.setattr(storage_health, "connection_backend", fake)
+    assert await storage_health.storage_check(db, settings) == "error"
+
+
+async def test_an_unexpected_2xx_body_is_an_error_not_a_crash(
+    db: AsyncSession, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A corporate proxy or gateway can answer a 2xx carrying HTML instead of JSON; an adapter's
+    own ``.json()`` call on that raises ``json.JSONDecodeError`` - a plain ``ValueError``
+    subclass, not ``StorageError``, ``TimeoutError`` or ``OSError``. This endpoint's whole job is
+    to answer when storage is broken, so an unexpected response shape here must become an "error"
+    verdict (and must not propagate out of the route as a 500), the same as any other probe
+    failure (finding 4)."""
+    monkeypatch.setattr(
+        storage_health,
+        "connection_backend",
+        lambda *_: Stub(json.JSONDecodeError("Expecting value", "<html>not json</html>", 0)),
+    )
     assert await storage_health.storage_check(db, settings) == "error"
 
 

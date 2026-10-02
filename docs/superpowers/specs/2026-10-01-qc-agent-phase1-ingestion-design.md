@@ -6,7 +6,7 @@
 | Date | 2026-10-01 |
 | Author | Connor Pham (TECHVIFY) with Claude |
 | Phase | 1 of 5 — Ingestion & Structure |
-| Revision | v2.2 (2026-10-02): the web UI is responsive and usable on a phone (mobile layout moved into scope); document Markdown is rendered in the browser and must be sanitised, because it comes from customer uploads. v2.1 (2026-10-01): storage configured in the UI by admins, chosen per project by owners, changeable later via migration (8.5). v2 replaces v1 (same day): user selects document type at upload; AI verifies, versions and normalises; SharePoint and Google Drive storage; customers as users; internet hosting with MFA |
+| Revision | v2.3 (2026-10-02): all projects share one SharePoint site, with one document library per customer, so IT issues a single `Sites.Selected` grant; both cloud adapters are built together in Plan 3b; Drive path-to-id resolution, revision retention and secret expiry are called out explicitly (8.2, 8.3, 8.6). v2.2 (2026-10-02): the web UI is responsive and usable on a phone (mobile layout moved into scope); document Markdown is rendered in the browser and must be sanitised, because it comes from customer uploads. v2.1 (2026-10-01): storage configured in the UI by admins, chosen per project by owners, changeable later via migration (8.5). v2 replaces v1 (same day): user selects document type at upload; AI verifies, versions and normalises; SharePoint and Google Drive storage; customers as users; internet hosting with MFA |
 
 ---
 
@@ -95,7 +95,8 @@ RAG / Q&A; test artefact generation; content quality review; live import connect
 | External LLM API | Claude API permitted; customer confirmation recorded per project |
 | Core approach | Deterministic pipeline; agent used only for judgment and drafting via custom tools; no agent file writes |
 | MFA | Mandatory TOTP for every account (proposed by TECHVIFY, accepted) |
-| CI platform | Not decided |
+| CI platform | GitHub Actions (confirmed 2026-10-01) |
+| SharePoint site layout | **One shared SharePoint site for every project** (confirmed 2026-10-02), one `Sites.Selected` grant in total rather than one per customer |
 
 ### 3.2 TECHVIFY assumptions
 
@@ -112,6 +113,7 @@ RAG / Q&A; test artefact generation; content quality review; live import connect
 - Taxonomy and templates are data, not code.
 - A storage interface with contract tests shared by all adapters.
 - Pin the Agent SDK; spike concurrency and isolation first.
+- On the shared SharePoint site, give **each customer its own document library** rather than only a folder, so direct team access can be granted per customer (see 8.2). This keeps the single `Sites.Selected` grant the stakeholder chose while preventing one customer's team from browsing another customer's documents.
 
 ---
 
@@ -435,11 +437,15 @@ All adapters pass one shared contract test suite (run against local FS always; a
 - Microsoft Graph, app-only (client credentials) via `msal`.
 - Permission: `Sites.Selected`, granted by IT per SharePoint site (least privilege) rather than tenant-wide `Sites.ReadWrite.All`.
 - Project root = site + document library (drive) + folder path. Upload sessions for files > 4 MB. Versions via `driveItem/versions`.
+- **Site layout (v2.3, 2026-10-02).** All projects live on one shared SharePoint site, so IT issues a single `Sites.Selected` grant instead of one per customer. Within that site, each customer gets its own **document library**; a project's root folder sits inside its customer's library. A document library is the unit SharePoint permissions are set on, so this is what keeps one customer's team from browsing another's documents while direct access stays available to the team (8.6). A `sharepoint` storage connection therefore carries site id + library (drive) id, and one connection is created per customer library.
+- **Version history must stay enabled** on every library the system writes to. SharePoint allows versioning to be turned off or capped per library; `list_versions` would then return less history than the application recorded. The adapter reports this through `health()` so a misconfigured library is visible on the Test connection action rather than discovered when a version is needed.
 
 ### 8.3 Google Drive adapter
 
 - Drive API v3 with a service account (`google-api-python-client`); the service account is added as Content manager on each Shared Drive.
 - Project root = Shared Drive id + folder path; folder paths resolved to ids and cached. `supportsAllDrives=true` on every call. Resumable uploads; new versions via `files.update` on the existing file id; versions via `revisions` (with `keepForever` on published versions).
+- **Paths are not native to Drive.** Drive addresses items by id and permits two items with the same name in the same folder, while `StorageBackend` is path-addressed and assumes one. The adapter resolves each path segment to a folder id, caches the mapping per connection, and treats a duplicate name at any segment as a storage error rather than picking one, so a divergence is reported instead of silently writing to the wrong item.
+- **Revision retention is capped.** Drive prunes revisions automatically unless `keepForever` is set, and `keepForever` itself is limited per file. The adapter sets it on published versions and `health()` reports when a file is at the limit.
 
 ### 8.4 Local FS adapter
 
@@ -457,6 +463,10 @@ Storage is configured from the web UI, not only through the API.
 ### 8.6 Access to storage
 
 Team members open the SharePoint site / Shared Drive directly using permissions IT grants. The system does not change storage permissions. Customers never receive storage access; they read through the web app, which streams files from storage after checking visibility.
+
+Because all projects share one SharePoint site (8.2), direct team access is granted **per document library**, not per site. Granting a person access to the site itself would expose every customer's documents, so IT grants library-level access only. The application does not depend on these grants: every permission it enforces is its own, in the database.
+
+**Secret expiry.** Entra ID client secrets and Google service-account keys expire or can be revoked by tenant policy. An expired secret fails every publish for every project on that connection. `health()` surfaces credential failures, and the Admin → Storage page shows the last health result, so an expiring credential is visible before it stops the pipeline.
 
 ---
 

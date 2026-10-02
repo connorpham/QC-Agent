@@ -11,6 +11,11 @@ export function setUnauthorizedHandler(handler: (() => void) | null): void {
   unauthorizedHandler = handler;
 }
 
+/** For request paths that bypass openapi-fetch (the multipart upload). */
+export function notifyUnauthorized(): void {
+  unauthorizedHandler?.();
+}
+
 const csrf: Middleware = {
   onRequest({ request }) {
     if (request.method !== "GET" && request.method !== "HEAD") {

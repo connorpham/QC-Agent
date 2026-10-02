@@ -8,7 +8,6 @@ one drive id and every data-path request addresses ``/drives/{drive_id}/`` and n
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import datetime
 from time import monotonic
 from typing import Any
 from urllib.parse import quote
@@ -25,6 +24,7 @@ from app.storage.base import (
     normalize_path,
 )
 from app.storage.http import TokenProvider, get_client
+from app.storage.responses import parsed_json, parsed_timestamp, required_header, required_str
 from app.storage.retry import GRAPH_POLICY, raise_for_storage, send_with_retry
 
 logger = logging.getLogger(__name__)
@@ -191,8 +191,15 @@ class SharePointBackend:
             "GET", f"{self._drive}/items/{item_id}/versions?$top=1", context=context
         )
         raise_for_storage(response, context=context)
-        values = response.json().get("value", [])
-        return str(values[0]["id"]) if values else ""
+        values = parsed_json(response, context=context).get("value", [])
+        if not values:
+            return ""
+        first = values[0]
+        if not isinstance(first, dict):
+            raise StorageError(
+                f"{context} failed: the storage service returned an unexpected response."
+            )
+        return required_str(first, "id", context=context)
 
     # -- StorageBackend --------------------------------------------------------------------
 
@@ -235,13 +242,12 @@ class SharePointBackend:
                 headers={"Content-Type": content_type},
             )
             raise_for_storage(response, context=context)
-            item = response.json()
+            item = parsed_json(response, context=context)
         else:
             item = await self._upload_session(path, data, context)
-        version_id = await self._newest_version_id(str(item["id"]), context)
-        return StoredFile(
-            item_id=str(item["id"]), version_id=version_id, web_url=item.get("webUrl")
-        )
+        item_id = required_str(item, "id", context=context)
+        version_id = await self._newest_version_id(item_id, context)
+        return StoredFile(item_id=item_id, version_id=version_id, web_url=item.get("webUrl"))
 
     async def _upload_session(self, path: str, data: bytes, context: str) -> dict[str, Any]:
         start = await self._send(
@@ -251,7 +257,7 @@ class SharePointBackend:
             json={"item": {"@microsoft.graph.conflictBehavior": "replace"}},
         )
         raise_for_storage(start, context=context)
-        upload_url = str(start.json()["uploadUrl"])
+        upload_url = required_str(parsed_json(start, context=context), "uploadUrl", context=context)
         total = len(data)
         last: httpx.Response | None = None
         for offset in range(0, total, CHUNK_BYTES):
@@ -274,15 +280,22 @@ class SharePointBackend:
             raise_for_storage(last, context=context)
         if last is None:
             raise StorageError(f"{context} failed: nothing to upload.")
-        item: dict[str, Any] = last.json()
-        return item
+        if last.status_code not in (200, 201):
+            # A 202 (or any other non-complete 2xx) here means Graph has not yet committed the
+            # item after the final chunk - itself the unexpected case, not a status this adapter
+            # can usefully continue from, and its body is not a completed item either (finding 8).
+            raise StorageError(
+                f"{context} failed: the storage service returned an unexpected response."
+            )
+        return parsed_json(last, context=context)
 
     async def get_file(self, path: str) -> bytes:
         relative = normalize_path(path)
         context = f"Downloading {relative}"
         response = await self._send("GET", f"{self._address(path)}/content", context=context)
         if response.status_code in (301, 302, 303, 307):
-            response = await self._client.get(response.headers["Location"])
+            location = required_header(response, "Location", context=context)
+            response = await self._client.get(location)
         if response.status_code == 404:
             raise StorageNotFound(f"File not found: {relative}")
         raise_for_storage(response, context=context)
@@ -296,7 +309,7 @@ class SharePointBackend:
         if response.status_code == 404:
             return False
         raise_for_storage(response, context=context)
-        return "folder" not in response.json()
+        return "folder" not in parsed_json(response, context=context)
 
     async def list_versions(self, path: str) -> list[StoredVersion]:
         # Graph accepts path addressing on /versions directly, so there is no separate
@@ -308,14 +321,21 @@ class SharePointBackend:
         if response.status_code == 404:
             raise StorageNotFound(f"File not found: {relative}")
         raise_for_storage(response, context=context)
-        values = response.json().get("value", [])
+        values = parsed_json(response, context=context).get("value", [])
+        if not isinstance(values, list):
+            raise StorageError(
+                f"{context} failed: the storage service returned an unexpected response."
+            )
+        for v in values:
+            if not isinstance(v, dict):
+                raise StorageError(
+                    f"{context} failed: the storage service returned an unexpected response."
+                )
         versions = [
             StoredVersion(
-                version_id=str(v["id"]),
+                version_id=required_str(v, "id", context=context),
                 size=int(v.get("size", 0)),
-                modified_at=datetime.fromisoformat(
-                    str(v["lastModifiedDateTime"]).replace("Z", "+00:00")
-                ),
+                modified_at=parsed_timestamp(v.get("lastModifiedDateTime"), context=context),
             )
             for v in values
         ]
@@ -331,7 +351,8 @@ class SharePointBackend:
             context=context,
         )
         if response.status_code in (301, 302, 303, 307):
-            response = await self._client.get(response.headers["Location"])
+            location = required_header(response, "Location", context=context)
+            response = await self._client.get(location)
         if response.status_code == 404:
             raise StorageNotFound(f"Version not found: {version_id}")
         raise_for_storage(response, context=context)

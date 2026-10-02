@@ -661,3 +661,77 @@ async def test_health_message_never_contains_a_token_or_a_provider_body() -> Non
     status = await _backend(script).health()
     assert status.ok is False
     assert "test-token" not in status.detail and "Bearer" not in status.detail
+
+
+# -- unexpected response shapes (finding 8) ------------------------------------------------
+
+
+async def test_an_upload_response_missing_the_item_id_is_a_storage_error_not_a_keyerror() -> None:
+    """Nothing on this branch has ever run against a real Drive tenant, so an unexpected 2xx
+    body - here, one missing the "id" field the rest of this method depends on - is the expected
+    case, not a bug that should surface as a bare ``KeyError``."""
+    script = (
+        Script()
+        .on("GET https://www.googleapis.com/drive/v3/files?", _list([]))
+        .on(
+            "POST https://www.googleapis.com/drive/v3/files?",
+            httpx.Response(200, json={"id": "f-1"}),
+        )
+        .on("uploadType=multipart", httpx.Response(200, json={"headRevisionId": "r1"}))
+    )
+    backend = _backend(script)
+    with pytest.raises(StorageError) as caught:
+        await backend.put_file(PATH, b"v1", "application/octet-stream")
+    assert "unexpected response" in str(caught.value)
+
+
+async def test_a_resumable_upload_response_that_is_not_2xx_complete_is_a_storage_error() -> None:
+    """Google's resumable-upload protocol signals an incomplete transfer with a 308; this adapter
+    always sends the whole file in one PUT, so a 308 here is itself the unexpected case - not a
+    status this adapter can usefully continue from, and its body is not a completed item either
+    (finding 8)."""
+    session_url = "https://www.googleapis.com/upload/drive/v3/files?upload_id=abc"
+    script = (
+        Script()
+        .on("GET https://www.googleapis.com/drive/v3/files?", _list([]))
+        .on(
+            "POST https://www.googleapis.com/drive/v3/files?",
+            httpx.Response(200, json={"id": "f-1"}),
+        )
+        .on("uploadType=resumable", httpx.Response(200, headers={"Location": session_url}))
+        .on(session_url, httpx.Response(308, headers={"Range": "bytes=0-99"}))
+    )
+    backend = _backend(script)
+    size = 6 * 1024 * 1024
+    with pytest.raises(StorageError) as caught:
+        await backend.put_file(PATH, b"x" * size, "application/octet-stream")
+    assert "unexpected response" in str(caught.value)
+
+
+async def test_a_malformed_revision_timestamp_is_a_storage_error_not_a_valueerror() -> None:
+    script = (
+        Script()
+        .on("%2702-requirements%27", _list([_folder("f-req", "02-requirements")]))
+        .on(
+            "GET https://www.googleapis.com/drive/v3/files?",
+            _list(
+                [
+                    {
+                        "id": "file-1",
+                        "name": "srs--customer-portal.docx",
+                        "mimeType": "application/octet-stream",
+                    }
+                ]
+            ),
+        )
+        .on(
+            "/revisions?",
+            httpx.Response(
+                200, json={"revisions": [{"id": "r1", "size": "2", "modifiedTime": "not-a-date"}]}
+            ),
+        )
+    )
+    backend = _backend(script)
+    with pytest.raises(StorageError) as caught:
+        await backend.list_versions(PATH)
+    assert "unexpected response" in str(caught.value)

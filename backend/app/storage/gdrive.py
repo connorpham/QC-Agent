@@ -11,7 +11,6 @@ import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import datetime
 from typing import Any
 from urllib.parse import quote
 
@@ -28,6 +27,7 @@ from app.storage.base import (
 )
 from app.storage.gdrive_paths import DriveResolver, FolderCache, TokenProvider
 from app.storage.http import get_client
+from app.storage.responses import parsed_json, parsed_timestamp, required_str
 from app.storage.retry import DRIVE_POLICY, raise_for_storage, send_with_retry
 
 logger = logging.getLogger(__name__)
@@ -237,12 +237,11 @@ class GoogleDriveBackend:
             file = await self._upload_resumable(
                 existing, parent_id, name, data, content_type, context
             )
+        item_id = required_str(file, "id", context=context)
         version_id = str(file.get("headRevisionId") or "")
         if self._keep_forever(relative) and version_id:
-            await self._mark_keep_forever(file["id"], version_id, relative, context)
-        return StoredFile(
-            item_id=str(file["id"]), version_id=version_id, web_url=file.get("webViewLink")
-        )
+            await self._mark_keep_forever(item_id, version_id, relative, context)
+        return StoredFile(item_id=item_id, version_id=version_id, web_url=file.get("webViewLink"))
 
     async def _upload_multipart(
         self,
@@ -280,8 +279,7 @@ class GoogleDriveBackend:
             headers={"Content-Type": f"multipart/related; boundary={boundary}"},
         )
         raise_for_storage(response, context=context)
-        result: dict[str, Any] = response.json()
-        return result
+        return parsed_json(response, context=context)
 
     async def _upload_resumable(
         self,
@@ -327,8 +325,15 @@ class GoogleDriveBackend:
             sleep=self._sleep,
         )
         raise_for_storage(upload, context=context)
-        result: dict[str, Any] = upload.json()
-        return result
+        if upload.status_code not in (200, 201):
+            # Google's resumable-upload protocol signals an incomplete transfer with a 308; this
+            # adapter always sends the whole file in one PUT, so any non-2xx-complete response
+            # here (308 most of all) is itself the unexpected case, not a status this adapter can
+            # usefully continue from - and its body is not a completed item either (finding 8).
+            raise StorageError(
+                f"{context} failed: the storage service returned an unexpected response."
+            )
+        return parsed_json(upload, context=context)
 
     async def _mark_keep_forever(
         self, file_id: str, revision_id: str, relative: str, context: str
@@ -385,15 +390,24 @@ class GoogleDriveBackend:
             },
         )
         raise_for_storage(response, context=context)
-        revisions = response.json().get("revisions", [])
+        revisions = parsed_json(response, context=context).get("revisions", [])
+        if not isinstance(revisions, list):
+            raise StorageError(
+                f"{context} failed: the storage service returned an unexpected response."
+            )
+        for r in revisions:
+            if not isinstance(r, dict):
+                raise StorageError(
+                    f"{context} failed: the storage service returned an unexpected response."
+                )
         kept = sum(1 for r in revisions if r.get("keepForever"))
         if kept >= KEEP_FOREVER_LIMIT:
             self.note_keep_forever_limit(relative, kept)
         return [
             StoredVersion(
-                version_id=str(r["id"]),
+                version_id=required_str(r, "id", context=context),
                 size=int(r.get("size", 0)),
-                modified_at=datetime.fromisoformat(r["modifiedTime"].replace("Z", "+00:00")),
+                modified_at=parsed_timestamp(r.get("modifiedTime"), context=context),
             )
             for r in revisions
         ]

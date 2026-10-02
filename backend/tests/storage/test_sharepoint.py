@@ -6,6 +6,7 @@ import pytest
 from app.storage.base import (
     HealthStatus,
     StorageAuthError,
+    StorageError,
     StorageNotFound,
     StoragePathError,
 )
@@ -272,6 +273,64 @@ async def test_missing_file_and_version_raise_not_found() -> None:
     with pytest.raises(StorageNotFound):
         await backend.move_to_trash(PATH)
     assert await backend.exists(PATH) is False
+
+
+# -- unexpected response shapes (finding 8) ------------------------------------------------
+
+
+async def test_an_upload_response_missing_the_item_id_is_a_storage_error_not_a_keyerror() -> None:
+    """Nothing on this branch has ever run against a real tenant, so an unexpected 2xx body -
+    here, one missing the "id" field put_file depends on - is the expected case, not a bug that
+    should surface as a bare ``KeyError``."""
+    script = Script().on("PUT", httpx.Response(201, json={"webUrl": "https://example.invalid/x"}))
+    backend = _backend(script)
+    with pytest.raises(StorageError) as caught:
+        await backend.put_file(PATH, b"v1", "text/plain")
+    assert "unexpected response" in str(caught.value)
+
+
+async def test_an_upload_session_response_missing_the_url_is_a_storage_error() -> None:
+    script = Script().on("createUploadSession", httpx.Response(200, json={}))
+    backend = _backend(script)
+    with pytest.raises(StorageError) as caught:
+        await backend.put_file(PATH, b"x" * (SIMPLE_UPLOAD_LIMIT + 1), "application/octet-stream")
+    assert "unexpected response" in str(caught.value)
+
+
+async def test_an_upload_session_final_chunk_that_is_not_2xx_complete_is_a_storage_error() -> None:
+    """A 202 on the final chunk means Graph has not yet committed the item - it is itself the
+    unexpected case here, not a status this adapter can usefully continue from, and its body is
+    not a completed item either (finding 8's "a resumable response that is a 308 rather than a
+    2xx", applied to Graph's own equivalent of an incomplete transfer)."""
+    session_url = "https://upload.invalid/session"
+    script = (
+        Script()
+        .on("createUploadSession", httpx.Response(200, json={"uploadUrl": session_url}))
+        .on(session_url, httpx.Response(202, json={}))
+    )
+    backend = _backend(script)
+    with pytest.raises(StorageError) as caught:
+        await backend.put_file(PATH, b"x" * (SIMPLE_UPLOAD_LIMIT + 1), "application/octet-stream")
+    assert "unexpected response" in str(caught.value)
+
+
+async def test_a_redirect_missing_a_location_header_is_a_storage_error_not_a_keyerror() -> None:
+    script = Script().on("/content", httpx.Response(302))  # no Location header at all
+    backend = _backend(script)
+    with pytest.raises(StorageError) as caught:
+        await backend.get_file(PATH)
+    assert "unexpected response" in str(caught.value)
+
+
+async def test_a_malformed_version_timestamp_is_a_storage_error_not_a_valueerror() -> None:
+    script = Script().on(
+        "/versions",
+        httpx.Response(200, json={"value": [{"id": "1.0", "lastModifiedDateTime": "not-a-date"}]}),
+    )
+    backend = _backend(script)
+    with pytest.raises(StorageError) as caught:
+        await backend.list_versions(PATH)
+    assert "unexpected response" in str(caught.value)
 
 
 async def test_version_content_follows_the_redirect_to_storage() -> None:

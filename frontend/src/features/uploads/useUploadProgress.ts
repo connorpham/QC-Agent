@@ -74,10 +74,16 @@ export function useUploadProgress(uploadId: string, options: Options = {}) {
     let polling: ReturnType<typeof setInterval> | null = null;
     let stopped = false;
     const stop = () => {
+      // `polling` is cleared unconditionally, even on a repeat call: the effect's cleanup is
+      // this same function, and it must still clear the handle on unmount even when a prior
+      // `error` handler already set `stopped`.
+      if (polling) {
+        clearInterval(polling);
+        polling = null;
+      }
       if (stopped) return;
       stopped = true;
       source.close();
-      if (polling) clearInterval(polling);
     };
     const finish = (fresh: Upload | null) => {
       if (fresh && hasActiveItems(fresh)) setGeneration((g) => g + 1);
@@ -110,12 +116,13 @@ export function useUploadProgress(uploadId: string, options: Options = {}) {
         report("reconnecting"); // the browser retries with Last-Event-ID by itself
         return;
       }
-      stop(); // the browser gave up: poll until nothing is active
+      stop(); // the browser gave up: poll until nothing is active (and clears any prior handle)
       report("polling");
       polling = setInterval(() => {
         void load().then((fresh) => {
           if (fresh && !hasActiveItems(fresh)) {
             if (polling) clearInterval(polling);
+            polling = null;
             report("closed");
           }
         });

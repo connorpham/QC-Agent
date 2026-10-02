@@ -1,5 +1,5 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, expect, it } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import { mockFetch } from "@/test/fetch-mock";
 import { FakeEventSource } from "@/test/fake-event-source";
 import { useUploadProgress } from "./useUploadProgress";
@@ -165,6 +165,28 @@ it("applies a snapshot item.status frame that carries no id (sent on connect and
   // the server's snapshot-on-connect frame (which deliberately carries no `id:` line)
   act(() => source.emit("item.status", { item_id: "i1", status: "checking" }));
   expect(screen.getByTestId("status")).toHaveTextContent("checking");
+});
+
+it("clears the polling interval on unmount so it cannot leak", async () => {
+  // Fake timers only for this test; restored in the `finally` below so no other test in this
+  // file (or any other) sees them.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    const f = mockFetch([{ path: `/api/v1/uploads/${UID}`, body: uploadWith("converting") }]);
+    const { unmount } = render(<Probe pollIntervalMs={20} />);
+    await waitFor(() => expect(screen.getByTestId("status")).toHaveTextContent("converting"));
+    const source = await lastSource();
+    act(() => source.fail(FakeEventSource.CLOSED)); // the browser gave up: polling starts
+    await waitFor(() => expect(screen.getByTestId("connection")).toHaveTextContent("polling"));
+    const callsAtUnmount = f.calls.length;
+    unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20 * 10); // several poll intervals' worth
+    });
+    expect(f.calls.length).toBe(callsAtUnmount); // no request fired after unmount
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("applies the final item states carried on upload.settled, ahead of the refetch", async () => {

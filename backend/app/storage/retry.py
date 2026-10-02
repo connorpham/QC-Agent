@@ -75,10 +75,15 @@ def retry_after_seconds(response: httpx.Response, max_delay: float) -> float | N
 
 
 def backoff_delay(attempt: int, policy: RetryPolicy) -> float:
-    """Exponential backoff with full jitter; ``attempt`` is 1 for the first retry."""
+    """Exponential backoff with full jitter; ``attempt`` is 1 for the first retry.
+
+    Full jitter draws from the whole ``[0, ceiling]`` window, not just its top half, so retrying
+    clients spread out instead of clustering in a shared half-window and re-creating the
+    reconnect storm this project has already had to fix once.
+    """
     ceiling = min(policy.base_delay * (2 ** (attempt - 1)), policy.max_delay)
     # Jitter spreads concurrent publishes; it is scheduling, not cryptography.
-    return max(0.05, random.uniform(ceiling / 2, ceiling))  # noqa: S311
+    return max(0.05, random.uniform(0, ceiling))  # noqa: S311
 
 
 def _should_retry(response: httpx.Response, policy: RetryPolicy) -> bool:
@@ -120,6 +125,7 @@ async def send_with_retry(
             response = await client.send(build_request())
         except httpx.TransportError:
             if attempt == policy.max_attempts:
+                logger.warning("%s: transport error, giving up after %s attempts", context, attempt)
                 raise StorageError(UNREACHABLE.format(context=context)) from None
             logger.warning("%s: transport error, attempt %s", context, attempt)
             await sleep(backoff_delay(attempt, policy))
@@ -134,4 +140,11 @@ async def send_with_retry(
         delay = retry_after_seconds(response, policy.max_delay)
         await sleep(delay if delay is not None else backoff_delay(attempt, policy))
     assert last is not None  # noqa: S101 - the loop only breaks after a retryable response
+    # status only, never the body: the same secrecy rule as raise_for_storage
+    logger.warning(
+        "%s: giving up after %s attempts, last status %s",
+        context,
+        policy.max_attempts,
+        last.status_code,
+    )
     raise StorageError(UNAVAILABLE.format(context=context))

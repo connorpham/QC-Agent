@@ -2,6 +2,7 @@
 so throttling, 5xx and credential failures behave the same on SharePoint and on Drive."""
 
 import asyncio
+import logging
 from collections.abc import Callable
 
 import httpx
@@ -12,6 +13,7 @@ from app.storage.retry import (
     DRIVE_POLICY,
     GRAPH_POLICY,
     RetryPolicy,
+    backoff_delay,
     raise_for_storage,
     retry_after_seconds,
     send_with_retry,
@@ -86,7 +88,18 @@ async def test_backoff_grows_and_stays_inside_the_cap() -> None:
             )
     assert len(clock.slept) == 3  # one sleep between each of the four attempts
     assert all(0.0 < delay <= 5.0 for delay in clock.slept)
-    assert clock.slept[0] <= clock.slept[-1]
+
+
+async def test_backoff_delay_is_full_jitter_not_equal_jitter() -> None:
+    """Full jitter draws from the whole [0, ceiling] range. Equal jitter (ceiling/2..ceiling,
+    the brief's original reference code) can never produce a value below the midpoint, so a
+    large sample that never dips below it would mean the naive half-range formula crept back
+    in."""
+    policy = RetryPolicy(base_delay=1.0, max_delay=4.0)
+    ceiling = 4.0  # attempt 3: base_delay * 2**2 == 4.0, already at the cap
+    samples = [backoff_delay(3, policy) for _ in range(500)]
+    assert all(0.0 <= delay <= ceiling for delay in samples)
+    assert min(samples) < ceiling / 2
 
 
 async def test_transport_errors_are_retried_then_reported_as_unreachable() -> None:
@@ -101,6 +114,46 @@ async def test_transport_errors_are_retried_then_reported_as_unreachable() -> No
                 client, _builder(client), policy=policy, context="probe", sleep=clock
             )
     assert len(clock.slept) == 2
+
+
+async def test_status_exhaustion_logs_a_warning_without_the_response_body(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    secret = "super-secret-token-value"
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, text=f"Unavailable: {secret}")
+
+    clock = Clock()
+    policy = RetryPolicy(max_attempts=2, base_delay=0.1, max_delay=1.0)
+    with caplog.at_level(logging.WARNING, logger="app.storage.retry"):
+        async with _client(handler) as client:
+            with pytest.raises(StorageError, match="temporarily unavailable"):
+                await send_with_retry(
+                    client, _builder(client), policy=policy, context="probe", sleep=clock
+                )
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("probe" in message and "503" in message for message in messages)
+    assert not any(secret in message for message in messages)
+
+
+async def test_transport_exhaustion_logs_a_warning_without_leaking_details(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("no route to host 10.0.0.1", request=request)
+
+    clock = Clock()
+    policy = RetryPolicy(max_attempts=2, base_delay=0.1, max_delay=1.0)
+    with caplog.at_level(logging.WARNING, logger="app.storage.retry"):
+        async with _client(handler) as client:
+            with pytest.raises(StorageError, match="could not be reached"):
+                await send_with_retry(
+                    client, _builder(client), policy=policy, context="probe", sleep=clock
+                )
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("probe" in message and str(policy.max_attempts) in message for message in messages)
+    assert not any("10.0.0.1" in message for message in messages)
 
 
 async def test_drive_quota_403_is_retried_but_a_plain_403_is_not() -> None:

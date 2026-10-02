@@ -6,7 +6,7 @@
 | Date | 2026-10-01 |
 | Author | Connor Pham (TECHVIFY) with Claude |
 | Phase | 1 of 5 — Ingestion & Structure |
-| Revision | v2.3 (2026-10-02): all projects share one SharePoint site, with one document library per customer, so IT issues a single `Sites.Selected` grant; both cloud adapters are built together in Plan 3b; Drive path-to-id resolution, revision retention and secret expiry are called out explicitly (8.2, 8.3, 8.6). v2.2 (2026-10-02): the web UI is responsive and usable on a phone (mobile layout moved into scope); document Markdown is rendered in the browser and must be sanitised, because it comes from customer uploads. v2.1 (2026-10-01): storage configured in the UI by admins, chosen per project by owners, changeable later via migration (8.5). v2 replaces v1 (same day): user selects document type at upload; AI verifies, versions and normalises; SharePoint and Google Drive storage; customers as users; internet hosting with MFA |
+| Revision | v2.3 (2026-10-02): all projects share one SharePoint site, with one document library per customer, so IT issues a single `Sites.Selected` grant; both cloud adapters are built together in Plan 3b; Drive path-to-id resolution, revision retention and secret expiry are called out explicitly (8.2, 8.3, 8.6); Drive is called over REST with the shared async HTTP client instead of `google-api-python-client` (8.3). v2.2 (2026-10-02): the web UI is responsive and usable on a phone (mobile layout moved into scope); document Markdown is rendered in the browser and must be sanitised, because it comes from customer uploads. v2.1 (2026-10-01): storage configured in the UI by admins, chosen per project by owners, changeable later via migration (8.5). v2 replaces v1 (same day): user selects document type at upload; AI verifies, versions and normalises; SharePoint and Google Drive storage; customers as users; internet hosting with MFA |
 
 ---
 
@@ -442,7 +442,8 @@ All adapters pass one shared contract test suite (run against local FS always; a
 
 ### 8.3 Google Drive adapter
 
-- Drive API v3 with a service account (`google-api-python-client`); the service account is added as Content manager on each Shared Drive.
+- Drive API v3 with a service account; the service account is added as Content manager on each Shared Drive.
+- **Client choice (v2.3, 2026-10-02).** Drive v3 is called over REST with the same shared async HTTP client as the SharePoint adapter, and `google-auth` is used only to mint the service-account token. The originally specified `google-api-python-client` is synchronous and discovery-based: inside this fully async backend it would need thread offloading and would bring a second HTTP stack with its own retry and timeout behaviour, so the two adapters could not share one retry policy. Nothing else in this section changes.
 - Project root = Shared Drive id + folder path; folder paths resolved to ids and cached. `supportsAllDrives=true` on every call. Resumable uploads; new versions via `files.update` on the existing file id; versions via `revisions` (with `keepForever` on published versions).
 - **Paths are not native to Drive.** Drive addresses items by id and permits two items with the same name in the same folder, while `StorageBackend` is path-addressed and assumes one. The adapter resolves each path segment to a folder id, caches the mapping per connection, and treats a duplicate name at any segment as a storage error rather than picking one, so a divergence is reported instead of silently writing to the wrong item.
 - **Revision retention is capped.** Drive prunes revisions automatically unless `keepForever` is set, and `keepForever` itself is limited per file. The adapter sets it on published versions and `health()` reports when a file is at the limit.

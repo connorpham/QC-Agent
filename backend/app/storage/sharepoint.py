@@ -32,8 +32,7 @@ logger = logging.getLogger(__name__)
 GRAPH = "https://graph.microsoft.com/v1.0"
 SCOPES = ["https://graph.microsoft.com/.default"]
 SIMPLE_UPLOAD_LIMIT = 4 * 1024 * 1024
-CHUNK_BYTES = 32 * 320 * 1024  # 10 MiB: Graph requires a multiple of 320 KiB; this is its own
-# documented default chunk size for large-file upload sessions.
+CHUNK_BYTES = 5 * 320 * 1024  # Graph requires a multiple of 320 KiB
 HEALTH_PROBE_NAME = ".qc-agent-health.txt"
 PROBE_CACHE_SECONDS = 600.0
 
@@ -261,6 +260,9 @@ class SharePointBackend:
         return "folder" not in response.json()
 
     async def list_versions(self, path: str) -> list[StoredVersion]:
+        # Graph accepts path addressing on /versions directly, so there is no separate
+        # "turn this path into an item id" lookup here (or in get_version, move_to_trash):
+        # that would be an extra request per call for no benefit. Do not re-add one.
         relative = normalize_path(path)
         context = f"Listing versions of {relative}"
         response = await self._send("GET", f"{self._address(path)}/versions", context=context)
@@ -356,33 +358,48 @@ class SharePointBackend:
         return await self._probe_write_and_versioning()
 
     async def _probe_write_and_versioning(self) -> HealthStatus:
+        """Write the probe file twice and count its versions.
+
+        ``item_id`` is set the moment the first write succeeds, and the ``finally`` block
+        deletes it on every exit path from here on - whether the second write fails, the
+        version count comes back short, or the version lookup itself errors - so a failed
+        health check never leaves the probe file behind in a customer's library.
+        """
         probe_path = (
             f"{self._root_path}/{HEALTH_PROBE_NAME}" if self._root_path else HEALTH_PROBE_NAME
         )
         address = f"{self._drive}/root:/{quote(probe_path, safe='/')}:"
         item_id = ""
-        for body in (b"qc-agent health probe 1\n", b"qc-agent health probe 2\n"):
-            written = await self._quiet(
-                "PUT", f"{address}/content", content=body, headers={"Content-Type": "text/plain"}
-            )
-            if isinstance(written, HealthStatus):
-                return HealthStatus(ok=False, detail=written.detail, field="site_id")
-            if written.status_code in (401, 403):
-                return HealthStatus(ok=False, detail=NO_WRITE, field="site_id")
-            if written.status_code >= 400:
-                return HealthStatus(
-                    ok=False,
-                    detail=f"Writing a test file failed ({written.status_code}).",
-                    field="drive_id",
+        try:
+            for body in (b"qc-agent health probe 1\n", b"qc-agent health probe 2\n"):
+                written = await self._quiet(
+                    "PUT",
+                    f"{address}/content",
+                    content=body,
+                    headers={"Content-Type": "text/plain"},
                 )
-            item_id = str(written.json()["id"])
+                if isinstance(written, HealthStatus):
+                    return HealthStatus(ok=False, detail=written.detail, field="site_id")
+                if written.status_code in (401, 403):
+                    return HealthStatus(ok=False, detail=NO_WRITE, field="site_id")
+                if written.status_code >= 400:
+                    return HealthStatus(
+                        ok=False,
+                        detail=f"Writing a test file failed ({written.status_code}).",
+                        field="drive_id",
+                    )
+                item_id = str(written.json()["id"])
 
-        versions = await self._quiet("GET", f"{self._drive}/items/{item_id}/versions")
-        count = 0 if isinstance(versions, HealthStatus) else len(versions.json().get("value", []))
-        await self._quiet("DELETE", f"{self._drive}/items/{item_id}")  # best effort cleanup
-        if count < 2:
-            return HealthStatus(ok=False, detail=VERSIONING_OFF, field="drive_id")
-        return HealthStatus(ok=True, detail="ok")
+            versions = await self._quiet("GET", f"{self._drive}/items/{item_id}/versions")
+            count = (
+                0 if isinstance(versions, HealthStatus) else len(versions.json().get("value", []))
+            )
+            if count < 2:
+                return HealthStatus(ok=False, detail=VERSIONING_OFF, field="drive_id")
+            return HealthStatus(ok=True, detail="ok")
+        finally:
+            if item_id:
+                await self._quiet("DELETE", f"{self._drive}/items/{item_id}")  # best effort
 
     async def _quiet(self, method: str, url: str, **kwargs: Any) -> httpx.Response | HealthStatus:
         """Send a probe request, turning a storage error into a status instead of raising."""

@@ -9,7 +9,7 @@ from app.storage.base import (
     StorageNotFound,
     StoragePathError,
 )
-from app.storage.sharepoint import CHUNK_BYTES, SharePointBackend
+from app.storage.sharepoint import CHUNK_BYTES, SIMPLE_UPLOAD_LIMIT, SharePointBackend
 
 SITE_ID = "contoso.sharepoint.com,00000000-0000-0000-0000-000000000000,1111"
 DRIVE_ID = "test-library-drive-id"
@@ -141,12 +141,23 @@ async def test_large_files_use_an_upload_session_in_320_kib_chunks() -> None:
         .on("/versions", httpx.Response(200, json={"value": [{"id": "1.0"}]}))
     )
     backend = _backend(script)
-    size = CHUNK_BYTES * 2 + 100
+    # A file goes through an upload session when it exceeds SIMPLE_UPLOAD_LIMIT, regardless of
+    # how that relates to CHUNK_BYTES; this file is sized off the upload threshold, not the
+    # chunk size, so it genuinely exercises the session path with a non-trivial last chunk.
+    size = SIMPLE_UPLOAD_LIMIT + CHUNK_BYTES + 100
     await backend.put_file(PATH, b"x" * size, "application/octet-stream")
     chunks = [r for r in script.requests if str(r.url) == session_url]
-    assert len(chunks) == 3
-    assert chunks[0].headers["Content-Range"] == f"bytes 0-{CHUNK_BYTES - 1}/{size}"
-    assert chunks[-1].headers["Content-Range"] == f"bytes {CHUNK_BYTES * 2}-{size - 1}/{size}"
+    expected_chunks = -(-size // CHUNK_BYTES)  # ceiling division
+    assert len(chunks) == expected_chunks
+    offset = 0
+    for index, chunk in enumerate(chunks):
+        is_last = index == len(chunks) - 1
+        chunk_len = (size - offset) if is_last else CHUNK_BYTES
+        assert chunk.headers["Content-Range"] == f"bytes {offset}-{offset + chunk_len - 1}/{size}"
+        if not is_last:
+            assert chunk_len == CHUNK_BYTES  # every chunk but the last is exactly CHUNK_BYTES
+        offset += chunk_len
+    assert offset == size  # every byte covered exactly once: no gap, no overlap
     assert "Authorization" not in chunks[0].headers  # the upload URL is already pre-authorised
 
 
@@ -276,6 +287,47 @@ async def test_health_reports_versioning_disabled() -> None:
     status = await _backend(script).health()
     assert status.ok is False and status.field == "drive_id"
     assert "Version history" in status.detail
+    assert [r for r in script.requests if r.method == "DELETE"]  # no litter even when it fails
+
+
+async def test_health_cleans_up_its_probe_when_the_second_write_fails() -> None:
+    """A failure partway through the probe (first write ok, second rejected) must not leave the
+    first write behind in the customer's library. ``Script`` always returns the same response
+    for a given match, so this test scripts the two PUTs by hand instead."""
+    site_response = httpx.Response(
+        200, json={"id": SITE_ID, "webUrl": "https://c.invalid/sites/qc"}
+    )
+    drive_response = httpx.Response(
+        200, json={"id": DRIVE_ID, "webUrl": "https://c.invalid/sites/qc/Docs"}
+    )
+    write_responses = [httpx.Response(201, json=_item("probe-1")), httpx.Response(403, json={})]
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        target = f"{request.method} {request.url}"
+        if f"/sites/{SITE_ID}" in target:
+            return site_response
+        if target.startswith(f"GET {DRIVE_PREFIX}?"):
+            return drive_response
+        if request.method == "PUT":
+            return write_responses.pop(0)
+        if request.method == "DELETE":
+            return httpx.Response(204)
+        return httpx.Response(404, json={})
+
+    backend = SharePointBackend(
+        SITE_ID,
+        DRIVE_ID,
+        "",
+        FakeTokens(),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        sleep=_no_sleep,
+    )
+    status = await backend.health()
+    assert status.ok is False and status.field == "site_id"
+    deletes = [r for r in requests if r.method == "DELETE"]
+    assert deletes and "probe-1" in str(deletes[0].url)
 
 
 async def test_health_is_ok_and_cleans_up_its_probe() -> None:

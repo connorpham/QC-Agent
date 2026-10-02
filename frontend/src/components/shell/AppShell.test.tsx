@@ -44,3 +44,25 @@ it("hides the admin link from team members and logs out", async () => {
   await waitFor(() => expect(replace).toHaveBeenCalledWith("/login"));
   expect(f.find("POST", "/api/v1/auth/logout")).toBeDefined();
 });
+
+it("collapses the navigation behind a menu button on small screens", async () => {
+  mockFetch([{ path: "/api/v1/auth/me", body: memberMe }]);
+  renderShell();
+  await screen.findByText("Page content");
+  const button = screen.getByRole("button", { name: "Open menu" });
+  const menu = document.getElementById(button.getAttribute("aria-controls") ?? "");
+  expect(menu).not.toBeNull();
+  expect(button).toHaveAttribute("aria-expanded", "false");
+  expect(menu).toHaveClass("hidden"); // Tailwind hides it below md; md:flex shows it again
+  await userEvent.click(button);
+  expect(screen.getByRole("button", { name: "Close menu" })).toHaveAttribute(
+    "aria-expanded",
+    "true",
+  );
+  expect(menu).not.toHaveClass("hidden");
+  await userEvent.click(screen.getByRole("link", { name: "Projects" }));
+  expect(screen.getByRole("button", { name: "Open menu" })).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
+});

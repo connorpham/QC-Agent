@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useId, useRef, type ReactNode } from "react";
+import { cx } from "@/lib/cx";
 import { m } from "@/messages";
 
 type Props = {
@@ -27,7 +28,10 @@ export function Dialog({ open, title, onClose, children, footer }: Props) {
       ref={ref}
       aria-labelledby={titleId}
       onClose={onClose}
-      className="m-auto w-full max-w-lg rounded-lg border border-border bg-surface p-0 text-fg shadow-xl backdrop:bg-black/40"
+      className={cx(
+        "m-auto w-full max-w-lg rounded-lg border border-border bg-surface p-0 text-fg shadow-xl backdrop:bg-black/40",
+        "max-sm:m-0 max-sm:h-dvh max-sm:max-h-none max-sm:w-screen max-sm:max-w-none max-sm:rounded-none max-sm:border-0",
+      )}
     >
       <div className="flex items-center justify-between border-b border-border px-5 py-3">
         <h2 id={titleId} className="text-lg font-semibold">
@@ -42,7 +46,7 @@ export function Dialog({ open, title, onClose, children, footer }: Props) {
           ×
         </button>
       </div>
-      <div className="px-5 py-4">{children}</div>
+      <div className="max-h-[70dvh] overflow-y-auto px-5 py-4 max-sm:max-h-none">{children}</div>
       {footer ? (
         <div className="flex justify-end gap-2 border-t border-border px-5 py-3">{footer}</div>
       ) : null}

@@ -370,7 +370,7 @@ class GoogleDriveBackend:
                 "keepForever refused for a file at Drive's limit (drive %s)", self._drive_id
             )
             return
-        raise_for_storage(response, context=context)
+        raise_for_storage(response, context=context, log_context=log_context)
 
     async def get_file(self, path: str) -> bytes:
         relative = normalize_path(path)

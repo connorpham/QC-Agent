@@ -141,4 +141,4 @@ async def test_connection(
     status = await connections_service.test_connection(
         db, connection, actor=admin, settings=settings
     )
-    return StorageTestResult(ok=status.ok, detail=status.detail)
+    return StorageTestResult(ok=status.ok, detail=status.detail, field=status.field)

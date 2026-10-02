@@ -14,6 +14,15 @@ def _clean_name(value: str) -> str:
     return cleaned
 
 
+def _required(label: str, value: str) -> str:
+    """``label`` names the field in lower case (e.g. ``"tenant id"``) so the message both reads
+    naturally and contains the exact words a caller matches on (spec 8.5's "field at fault")."""
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError(f"A {label} is required.")
+    return cleaned
+
+
 class LocalFsConfig(BaseModel):
     """Non-secret configuration of a ``localfs`` connection."""
 
@@ -24,10 +33,53 @@ class LocalFsConfig(BaseModel):
     @field_validator("root_path")
     @classmethod
     def _strip(cls, value: str) -> str:
-        cleaned = value.strip()
-        if not cleaned:
-            raise ValueError("Root path is required.")
-        return cleaned
+        return _required("root path", value)
+
+
+class SharePointConfig(BaseModel):
+    """Non-secret configuration of a ``sharepoint`` connection: one customer's document library
+    on the single shared site (spec 8.2). The client secret is stored separately, write-only."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: str = Field(default="", max_length=200, validate_default=True)
+    client_id: str = Field(default="", max_length=200, validate_default=True)
+    site_id: str = Field(default="", max_length=400, validate_default=True)
+    drive_id: str = Field(default="", max_length=400, validate_default=True)
+
+    @field_validator("tenant_id")
+    @classmethod
+    def _strip_tenant(cls, value: str) -> str:
+        return _required("tenant id", value)
+
+    @field_validator("client_id")
+    @classmethod
+    def _strip_client(cls, value: str) -> str:
+        return _required("client id", value)
+
+    @field_validator("site_id")
+    @classmethod
+    def _strip_site(cls, value: str) -> str:
+        return _required("site id", value)
+
+    @field_validator("drive_id")
+    @classmethod
+    def _strip_drive(cls, value: str) -> str:
+        return _required("document library drive id", value)
+
+
+class GDriveConfig(BaseModel):
+    """Non-secret configuration of a ``gdrive`` connection. The service-account JSON key is
+    stored separately, write-only."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    drive_id: str = Field(default="", max_length=200, validate_default=True)
+
+    @field_validator("drive_id")
+    @classmethod
+    def _strip_drive(cls, value: str) -> str:
+        return _required("Shared Drive id", value)
 
 
 class StorageConnectionCreate(BaseModel):
@@ -78,3 +130,4 @@ class StorageConnectionAvailable(BaseModel):
 class StorageTestResult(BaseModel):
     ok: bool
     detail: str
+    field: str | None = None  # the connection field at fault, when the adapter identified one

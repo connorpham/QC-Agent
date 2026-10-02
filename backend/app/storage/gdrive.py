@@ -167,6 +167,7 @@ class GoogleDriveBackend:
         url: str,
         *,
         context: str,
+        log_context: str | None = None,
         raise_on_auth_error: bool = True,
         **kwargs: Any,
     ) -> httpx.Response:
@@ -176,6 +177,7 @@ class GoogleDriveBackend:
             lambda: self._client.build_request(method, url, headers=headers, **kwargs),
             policy=DRIVE_POLICY,
             context=context,
+            log_context=log_context,
             sleep=self._sleep,
             raise_on_auth_error=raise_on_auth_error,
         )
@@ -228,19 +230,25 @@ class GoogleDriveBackend:
             await self._resolver.ensure_folder(folder, root_id=root_id) if folder else root_id
         )
         existing = await self._resolver.find_child(parent_id, name)
-        context = f"Uploading a file (drive {self._drive_id})"
+        # ``context`` reaches a raised StorageError's message, which the publish pipeline stores
+        # verbatim as an upload item's ``error`` field and a client-role user can read back for
+        # their own upload - it must never carry the Shared Drive id, an identifier of that
+        # customer's own drive. ``log_context`` may, and is what the log line uses, so an
+        # operator can still tell which connection failed (wave 2 of finding 9).
+        context = "Uploading a file"
+        log_context = f"{context} (drive {self._drive_id})"
         if len(data) <= MULTIPART_LIMIT:
             file = await self._upload_multipart(
-                existing, parent_id, name, data, content_type, context
+                existing, parent_id, name, data, content_type, context, log_context
             )
         else:
             file = await self._upload_resumable(
-                existing, parent_id, name, data, content_type, context
+                existing, parent_id, name, data, content_type, context, log_context
             )
         item_id = required_str(file, "id", context=context)
         version_id = str(file.get("headRevisionId") or "")
         if self._keep_forever(relative) and version_id:
-            await self._mark_keep_forever(item_id, version_id, relative, context)
+            await self._mark_keep_forever(item_id, version_id, relative, context, log_context)
         return StoredFile(item_id=item_id, version_id=version_id, web_url=file.get("webViewLink"))
 
     async def _upload_multipart(
@@ -251,6 +259,7 @@ class GoogleDriveBackend:
         data: bytes,
         content_type: str,
         context: str,
+        log_context: str,
     ) -> dict[str, Any]:
         metadata: dict[str, Any] = {"name": name}
         if existing is None:
@@ -270,6 +279,7 @@ class GoogleDriveBackend:
             "POST" if existing is None else "PATCH",
             url,
             context=context,
+            log_context=log_context,
             params={
                 "uploadType": "multipart",
                 "supportsAllDrives": "true",
@@ -278,7 +288,7 @@ class GoogleDriveBackend:
             content=body,
             headers={"Content-Type": f"multipart/related; boundary={boundary}"},
         )
-        raise_for_storage(response, context=context)
+        raise_for_storage(response, context=context, log_context=log_context)
         return parsed_json(response, context=context)
 
     async def _upload_resumable(
@@ -289,6 +299,7 @@ class GoogleDriveBackend:
         data: bytes,
         content_type: str,
         context: str,
+        log_context: str,
     ) -> dict[str, Any]:
         metadata: dict[str, Any] = {"name": name}
         if existing is None:
@@ -297,6 +308,7 @@ class GoogleDriveBackend:
             "POST" if existing is None else "PATCH",
             UPLOAD if existing is None else f"{UPLOAD}/{existing.id}",
             context=context,
+            log_context=log_context,
             params={
                 "uploadType": "resumable",
                 "supportsAllDrives": "true",
@@ -305,7 +317,7 @@ class GoogleDriveBackend:
             json=metadata,
             headers={"X-Upload-Content-Type": content_type},
         )
-        raise_for_storage(start, context=context)
+        raise_for_storage(start, context=context, log_context=log_context)
         session_url = start.headers.get("Location")
         if not session_url:
             raise StorageError(f"{context} failed: Google Drive did not start an upload session.")
@@ -322,9 +334,10 @@ class GoogleDriveBackend:
             ),
             policy=DRIVE_POLICY,
             context=context,
+            log_context=log_context,
             sleep=self._sleep,
         )
-        raise_for_storage(upload, context=context)
+        raise_for_storage(upload, context=context, log_context=log_context)
         if upload.status_code not in (200, 201):
             # Google's resumable-upload protocol signals an incomplete transfer with a 308; this
             # adapter always sends the whole file in one PUT, so any non-2xx-complete response
@@ -336,34 +349,42 @@ class GoogleDriveBackend:
         return parsed_json(upload, context=context)
 
     async def _mark_keep_forever(
-        self, file_id: str, revision_id: str, relative: str, context: str
+        self, file_id: str, revision_id: str, relative: str, context: str, log_context: str
     ) -> None:
         response = await self._send(
             "PATCH",
             f"{API}/files/{file_id}/revisions/{revision_id}",
             context=context,
+            log_context=log_context,
             params={"fields": "id,keepForever", "supportsAllDrives": "true"},
             json={"keepForever": True},
         )
         if response.status_code == 403:
             # Drive caps keepForever revisions per file. The upload itself succeeded; only the
             # retention of this revision is lost, so the publish is not failed for it.
+            # ``relative`` is a customer document path, so note_keep_forever_limit keeps it for
+            # the admin-only health detail (spec 13 permits that), but the log line here - same
+            # class of leak as finding 9 - identifies the connection instead (wave 2).
             self.note_keep_forever_limit(relative, KEEP_FOREVER_LIMIT)
-            logger.warning("keepForever refused for a file at Drive's limit: %s", relative)
+            logger.warning(
+                "keepForever refused for a file at Drive's limit (drive %s)", self._drive_id
+            )
             return
         raise_for_storage(response, context=context)
 
     async def get_file(self, path: str) -> bytes:
         relative = normalize_path(path)
         entry = await self._resolver.resolve(relative, root_id=await self._root(create=False))
-        context = f"Downloading a file (drive {self._drive_id})"
+        context = "Downloading a file"
+        log_context = f"{context} (drive {self._drive_id})"
         response = await self._send(
             "GET",
             f"{API}/files/{entry.id}",
             context=context,
+            log_context=log_context,
             params={"alt": "media", "supportsAllDrives": "true"},
         )
-        raise_for_storage(response, context=context)
+        raise_for_storage(response, context=context, log_context=log_context)
         return response.content
 
     async def exists(self, path: str) -> bool:
@@ -378,18 +399,20 @@ class GoogleDriveBackend:
     async def list_versions(self, path: str) -> list[StoredVersion]:
         relative = normalize_path(path)
         entry = await self._resolver.resolve(relative, root_id=await self._root(create=False))
-        context = f"Listing versions (drive {self._drive_id})"
+        context = "Listing versions"
+        log_context = f"{context} (drive {self._drive_id})"
         response = await self._send(
             "GET",
             f"{API}/files/{entry.id}/revisions",
             context=context,
+            log_context=log_context,
             params={
                 "fields": "revisions(id,size,modifiedTime,keepForever)",
                 "pageSize": "1000",
                 "supportsAllDrives": "true",
             },
         )
-        raise_for_storage(response, context=context)
+        raise_for_storage(response, context=context, log_context=log_context)
         revisions = parsed_json(response, context=context).get("revisions", [])
         if not isinstance(revisions, list):
             raise StorageError(
@@ -415,30 +438,34 @@ class GoogleDriveBackend:
     async def get_version(self, path: str, version_id: str) -> bytes:
         relative = normalize_path(path)
         entry = await self._resolver.resolve(relative, root_id=await self._root(create=False))
-        context = f"Downloading a version (drive {self._drive_id})"
+        context = "Downloading a version"
+        log_context = f"{context} (drive {self._drive_id})"
         response = await self._send(
             "GET",
             f"{API}/files/{entry.id}/revisions/{version_id}",
             context=context,
+            log_context=log_context,
             params={"alt": "media", "supportsAllDrives": "true"},
         )
         if response.status_code == 404:
             raise StorageNotFound(f"Version not found: {version_id}")
-        raise_for_storage(response, context=context)
+        raise_for_storage(response, context=context, log_context=log_context)
         return response.content
 
     async def move_to_trash(self, path: str) -> None:
         relative = normalize_path(path)
         entry = await self._resolver.resolve(relative, root_id=await self._root(create=False))
-        context = f"Removing a file (drive {self._drive_id})"
+        context = "Removing a file"
+        log_context = f"{context} (drive {self._drive_id})"
         response = await self._send(
             "PATCH",
             f"{API}/files/{entry.id}",
             context=context,
+            log_context=log_context,
             params={"supportsAllDrives": "true", "fields": "id"},
             json={"trashed": True},
         )
-        raise_for_storage(response, context=context)
+        raise_for_storage(response, context=context, log_context=log_context)
         self._resolver.forget(relative)
 
     async def health(self, *, probe_write: bool = False) -> HealthStatus:

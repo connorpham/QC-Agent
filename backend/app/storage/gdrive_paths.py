@@ -114,16 +114,20 @@ class DriveResolver:
             "fields": LIST_FIELDS,
         }
         headers = await self._headers()
+        # ``context`` reaches a raised StorageError's message, which a client can read back
+        # through an upload item's ``error`` field - it must never carry the Shared Drive id.
+        # ``log_context`` may, for the log line only (wave 2 of finding 9).
+        context = "Looking up an item in Google Drive"
+        log_context = f"{context} (drive {self._drive_id})"
         response = await send_with_retry(
             self._client,
             lambda: self._client.build_request("GET", FILES_URL, params=params, headers=headers),
             policy=DRIVE_POLICY,
-            context=f"Looking up an item in Google Drive (drive {self._drive_id})",
+            context=context,
+            log_context=log_context,
             sleep=self._sleep,
         )
-        raise_for_storage(
-            response, context=f"Looking up an item in Google Drive (drive {self._drive_id})"
-        )
+        raise_for_storage(response, context=context, log_context=log_context)
         files = response.json().get("files", [])
         if len(files) > 1:
             raise StorageAmbiguousPath(
@@ -166,6 +170,8 @@ class DriveResolver:
     async def create_folder(self, parent_id: str, name: str) -> str:
         headers = await self._headers()
         body = {"name": name, "mimeType": FOLDER_MIME, "parents": [parent_id]}
+        context = "Creating a folder in Google Drive"
+        log_context = f"{context} (drive {self._drive_id})"
         response = await send_with_retry(
             self._client,
             lambda: self._client.build_request(
@@ -176,12 +182,11 @@ class DriveResolver:
                 headers=headers,
             ),
             policy=DRIVE_POLICY,
-            context=f"Creating a folder in Google Drive (drive {self._drive_id})",
+            context=context,
+            log_context=log_context,
             sleep=self._sleep,
         )
-        raise_for_storage(
-            response, context=f"Creating a folder in Google Drive (drive {self._drive_id})"
-        )
+        raise_for_storage(response, context=context, log_context=log_context)
         created: str = response.json()["id"]
         return created
 

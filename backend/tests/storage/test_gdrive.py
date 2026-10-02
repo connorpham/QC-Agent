@@ -687,6 +687,26 @@ async def test_a_failed_upload_is_logged_without_the_documents_path(
     assert any(DRIVE_ID in m for m in messages)  # and so is the connection
 
 
+async def test_a_failed_upload_error_never_names_the_drive(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The raised ``StorageError`` is what the publish pipeline stores verbatim as the upload
+    item's ``error`` field, which a client-role user can read back for their own upload. The
+    Shared Drive id is an internal identifier of that customer's own drive - it must never
+    appear there, even though the log line may (and should) still carry it, so an operator can
+    tell which connection failed (wave 2 of finding 9)."""
+    flat_path = "srs--customer-portal.docx"
+    script = Script().on("GET https://www.googleapis.com/drive/v3/files?", _list([]))
+    backend = _backend(script)
+    with caplog.at_level(logging.WARNING), pytest.raises(StorageError) as caught:
+        await backend.put_file(flat_path, b"v1", "application/octet-stream")
+    message = str(caught.value)
+    assert DRIVE_ID not in message
+    assert message == "Uploading a file failed (404)."
+    logged = [r.getMessage() for r in caplog.records]
+    assert any(DRIVE_ID in m for m in logged)  # the log line still identifies the connection
+
+
 # -- unexpected response shapes (finding 8) ------------------------------------------------
 
 

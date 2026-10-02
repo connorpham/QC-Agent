@@ -298,6 +298,25 @@ async def test_a_failed_upload_is_logged_without_the_documents_path(
     assert any(DRIVE_ID in m for m in messages)  # and so is the connection
 
 
+async def test_a_failed_upload_error_never_names_the_drive(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The raised ``StorageError`` is what the publish pipeline stores verbatim as the upload
+    item's ``error`` field, which a client-role user can read back for their own upload. On a
+    SharePoint site shared by every customer, the drive (document library) id identifies one
+    customer's library specifically - it must never appear there, even though the log line may
+    (and should) still carry it (wave 2 of finding 9)."""
+    script = Script()  # every request falls through to the default itemNotFound 404
+    backend = _backend(script)
+    with caplog.at_level(logging.WARNING), pytest.raises(StorageError) as caught:
+        await backend.put_file(PATH, b"v1", "text/plain")
+    message = str(caught.value)
+    assert DRIVE_ID not in message
+    assert message == "Uploading a file failed (404)."
+    logged = [r.getMessage() for r in caplog.records]
+    assert any(DRIVE_ID in m for m in logged)
+
+
 # -- unexpected response shapes (finding 8) ------------------------------------------------
 
 
@@ -707,6 +726,30 @@ async def test_health_is_ok_and_cleans_up_its_probe() -> None:
     backend = _backend(script)
     assert await backend.health(probe_write=True) == HealthStatus(ok=True, detail="ok")
     assert [r for r in script.requests if r.method == "DELETE"]
+
+
+async def test_health_write_probe_response_missing_the_item_id_is_a_storage_error() -> None:
+    """Test connection is the screen an administrator is staring at waiting for a diagnosis; an
+    unexpected response shape here must become one, not a bare ``KeyError`` that the service
+    layer's ``except StorageError`` cannot catch, surfacing as a 500 that tells the administrator
+    nothing about which input is wrong (wave 2, item 3)."""
+    script = (
+        Script()
+        .on(
+            f"/sites/{SITE_ID}",
+            httpx.Response(200, json={"id": SITE_ID, "webUrl": "https://c.invalid/sites/qc"}),
+        )
+        .on(
+            DRIVE_PREFIX + "?",
+            httpx.Response(200, json={"id": DRIVE_ID, "webUrl": "https://c.invalid/sites/qc/Docs"}),
+        )
+        .on("PUT", httpx.Response(201, json={"webUrl": "https://example.invalid/x"}))
+        .on("DELETE", httpx.Response(204))
+    )
+    backend = _backend(script)
+    with pytest.raises(StorageError) as caught:
+        await backend.health(probe_write=True)
+    assert "unexpected response" in str(caught.value)
 
 
 async def test_health_probe_result_is_cached() -> None:

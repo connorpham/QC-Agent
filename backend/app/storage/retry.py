@@ -92,12 +92,24 @@ def _should_retry(response: httpx.Response, policy: RetryPolicy) -> bool:
     return policy.retry_on_response is not None and policy.retry_on_response(response)
 
 
-def raise_for_storage(response: httpx.Response, *, context: str) -> None:
-    """Turn a failed response into a storage error with a message safe to show a user."""
+def raise_for_storage(
+    response: httpx.Response, *, context: str, log_context: str | None = None
+) -> None:
+    """Turn a failed response into a storage error with a message safe to show a user.
+
+    ``context`` names only the operation (e.g. "Uploading a file") and is what goes into the
+    raised message - this reaches a client through ``item.error`` on an upload, so it must never
+    carry an internal identifier such as a Shared Drive id or a SharePoint site/library id (spec
+    13; a wave-2 fix to finding 9, which put exactly such an identifier into the single string
+    this used to be). ``log_context`` may add that identifier for the log line only; it never
+    reaches a raised exception. Defaults to ``context`` so a caller with nothing extra to log
+    need not pass it.
+    """
     status = response.status_code
     if status < 400:
         return
-    logger.warning("%s failed with status %s", context, status)  # status only, never the body
+    # status only, never the body: the same secrecy rule for both the log and the message
+    logger.warning("%s failed with status %s", log_context or context, status)
     if status in (401, 403):
         raise StorageAuthError(DENIED.format(context=context))
     if status in RETRYABLE_STATUSES:
@@ -111,6 +123,7 @@ async def send_with_retry(
     *,
     policy: RetryPolicy,
     context: str,
+    log_context: str | None = None,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     raise_on_auth_error: bool = True,
 ) -> httpx.Response:
@@ -124,21 +137,25 @@ async def send_with_retry(
     ``build_request`` is a factory, not a request, so each attempt gets a fresh body. A response
     that is not retryable is returned as it is: the caller decides whether 404 means
     ``StorageNotFound`` or something else. Exhausting the attempts raises a storage error.
+
+    See ``raise_for_storage`` for the split between ``context`` (reaches the raised message,
+    and therefore a client) and ``log_context`` (reaches only the log line).
     """
+    label = log_context or context
     last: httpx.Response | None = None
     for attempt in range(1, policy.max_attempts + 1):
         try:
             response = await client.send(build_request())
         except httpx.TransportError:
             if attempt == policy.max_attempts:
-                logger.warning("%s: transport error, giving up after %s attempts", context, attempt)
+                logger.warning("%s: transport error, giving up after %s attempts", label, attempt)
                 raise StorageError(UNREACHABLE.format(context=context)) from None
-            logger.warning("%s: transport error, attempt %s", context, attempt)
+            logger.warning("%s: transport error, attempt %s", label, attempt)
             await sleep(backoff_delay(attempt, policy))
             continue
         if not _should_retry(response, policy):
             if raise_on_auth_error and response.status_code in (401, 403):
-                raise_for_storage(response, context=context)
+                raise_for_storage(response, context=context, log_context=log_context)
             return response
         last = response
         if attempt == policy.max_attempts:
@@ -149,7 +166,7 @@ async def send_with_retry(
     # status only, never the body: the same secrecy rule as raise_for_storage
     logger.warning(
         "%s: giving up after %s attempts, last status %s",
-        context,
+        label,
         policy.max_attempts,
         last.status_code,
     )

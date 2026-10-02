@@ -170,6 +170,7 @@ class SharePointBackend:
         url: str,
         *,
         context: str,
+        log_context: str | None = None,
         auth_raises: bool = True,
         **kwargs: Any,
     ) -> httpx.Response:
@@ -182,15 +183,19 @@ class SharePointBackend:
             lambda: self._client.build_request(method, url, headers=headers, **kwargs),
             policy=GRAPH_POLICY,
             context=context,
+            log_context=log_context,
             sleep=self._sleep,
             raise_on_auth_error=auth_raises,
         )
 
-    async def _newest_version_id(self, item_id: str, context: str) -> str:
+    async def _newest_version_id(self, item_id: str, context: str, log_context: str) -> str:
         response = await self._send(
-            "GET", f"{self._drive}/items/{item_id}/versions?$top=1", context=context
+            "GET",
+            f"{self._drive}/items/{item_id}/versions?$top=1",
+            context=context,
+            log_context=log_context,
         )
-        raise_for_storage(response, context=context)
+        raise_for_storage(response, context=context, log_context=log_context)
         values = parsed_json(response, context=context).get("value", [])
         if not values:
             return ""
@@ -215,11 +220,18 @@ class SharePointBackend:
                 if prefix
                 else f"{self._drive}/root/children"
             )
-            context = f"Creating a folder (drive {self._drive_id})"
+            # ``context`` reaches a raised StorageError's message, which a client can read back
+            # through an upload item's ``error`` field - it must never carry the drive (document
+            # library) id, which on a site shared by every customer identifies one customer's
+            # library specifically. ``log_context`` may, for the log line only (wave 2 of
+            # finding 9).
+            context = "Creating a folder"
+            log_context = f"{context} (drive {self._drive_id})"
             response = await self._send(
                 "POST",
                 target,
                 context=context,
+                log_context=log_context,
                 json={
                     "name": name,
                     "folder": {},
@@ -228,35 +240,40 @@ class SharePointBackend:
             )
             if response.status_code == 409:
                 continue  # already there, which is what ensure_folder promises
-            raise_for_storage(response, context=context)
+            raise_for_storage(response, context=context, log_context=log_context)
 
     async def put_file(self, path: str, data: bytes, content_type: str) -> StoredFile:
         normalize_path(path)  # validated here too, before any decision about which upload to use
-        context = f"Uploading a file (drive {self._drive_id})"
+        context = "Uploading a file"
+        log_context = f"{context} (drive {self._drive_id})"
         if len(data) <= SIMPLE_UPLOAD_LIMIT:
             response = await self._send(
                 "PUT",
                 f"{self._address(path)}/content",
                 context=context,
+                log_context=log_context,
                 content=data,
                 headers={"Content-Type": content_type},
             )
-            raise_for_storage(response, context=context)
+            raise_for_storage(response, context=context, log_context=log_context)
             item = parsed_json(response, context=context)
         else:
-            item = await self._upload_session(path, data, context)
+            item = await self._upload_session(path, data, context, log_context)
         item_id = required_str(item, "id", context=context)
-        version_id = await self._newest_version_id(item_id, context)
+        version_id = await self._newest_version_id(item_id, context, log_context)
         return StoredFile(item_id=item_id, version_id=version_id, web_url=item.get("webUrl"))
 
-    async def _upload_session(self, path: str, data: bytes, context: str) -> dict[str, Any]:
+    async def _upload_session(
+        self, path: str, data: bytes, context: str, log_context: str
+    ) -> dict[str, Any]:
         start = await self._send(
             "POST",
             f"{self._address(path)}/createUploadSession",
             context=context,
+            log_context=log_context,
             json={"item": {"@microsoft.graph.conflictBehavior": "replace"}},
         )
-        raise_for_storage(start, context=context)
+        raise_for_storage(start, context=context, log_context=log_context)
         upload_url = required_str(parsed_json(start, context=context), "uploadUrl", context=context)
         total = len(data)
         last: httpx.Response | None = None
@@ -275,9 +292,10 @@ class SharePointBackend:
                 ),
                 policy=GRAPH_POLICY,
                 context=context,
+                log_context=log_context,
                 sleep=self._sleep,
             )
-            raise_for_storage(last, context=context)
+            raise_for_storage(last, context=context, log_context=log_context)
         if last is None:
             raise StorageError(f"{context} failed: nothing to upload.")
         if last.status_code not in (200, 201):
@@ -291,24 +309,31 @@ class SharePointBackend:
 
     async def get_file(self, path: str) -> bytes:
         relative = normalize_path(path)
-        context = f"Downloading a file (drive {self._drive_id})"
-        response = await self._send("GET", f"{self._address(path)}/content", context=context)
+        context = "Downloading a file"
+        log_context = f"{context} (drive {self._drive_id})"
+        response = await self._send(
+            "GET", f"{self._address(path)}/content", context=context, log_context=log_context
+        )
         if response.status_code in (301, 302, 303, 307):
             location = required_header(response, "Location", context=context)
             response = await self._client.get(location)
         if response.status_code == 404:
             raise StorageNotFound(f"File not found: {relative}")
-        raise_for_storage(response, context=context)
+        raise_for_storage(response, context=context, log_context=log_context)
         return response.content
 
     async def exists(self, path: str) -> bool:
-        context = f"Checking a file (drive {self._drive_id})"
+        context = "Checking a file"
+        log_context = f"{context} (drive {self._drive_id})"
         response = await self._send(
-            "GET", f"{self._address(path)}?$select=id,folder", context=context
+            "GET",
+            f"{self._address(path)}?$select=id,folder",
+            context=context,
+            log_context=log_context,
         )
         if response.status_code == 404:
             return False
-        raise_for_storage(response, context=context)
+        raise_for_storage(response, context=context, log_context=log_context)
         return "folder" not in parsed_json(response, context=context)
 
     async def list_versions(self, path: str) -> list[StoredVersion]:
@@ -316,11 +341,14 @@ class SharePointBackend:
         # "turn this path into an item id" lookup here (or in get_version, move_to_trash):
         # that would be an extra request per call for no benefit. Do not re-add one.
         relative = normalize_path(path)
-        context = f"Listing versions (drive {self._drive_id})"
-        response = await self._send("GET", f"{self._address(path)}/versions", context=context)
+        context = "Listing versions"
+        log_context = f"{context} (drive {self._drive_id})"
+        response = await self._send(
+            "GET", f"{self._address(path)}/versions", context=context, log_context=log_context
+        )
         if response.status_code == 404:
             raise StorageNotFound(f"File not found: {relative}")
-        raise_for_storage(response, context=context)
+        raise_for_storage(response, context=context, log_context=log_context)
         values = parsed_json(response, context=context).get("value", [])
         if not isinstance(values, list):
             raise StorageError(
@@ -344,27 +372,32 @@ class SharePointBackend:
 
     async def get_version(self, path: str, version_id: str) -> bytes:
         normalize_path(path)
-        context = f"Downloading a version (drive {self._drive_id})"
+        context = "Downloading a version"
+        log_context = f"{context} (drive {self._drive_id})"
         response = await self._send(
             "GET",
             f"{self._address(path)}/versions/{quote(version_id, safe='')}/content",
             context=context,
+            log_context=log_context,
         )
         if response.status_code in (301, 302, 303, 307):
             location = required_header(response, "Location", context=context)
             response = await self._client.get(location)
         if response.status_code == 404:
             raise StorageNotFound(f"Version not found: {version_id}")
-        raise_for_storage(response, context=context)
+        raise_for_storage(response, context=context, log_context=log_context)
         return response.content
 
     async def move_to_trash(self, path: str) -> None:
         relative = normalize_path(path)
-        context = f"Removing a file (drive {self._drive_id})"
-        response = await self._send("DELETE", self._address(path), context=context)
+        context = "Removing a file"
+        log_context = f"{context} (drive {self._drive_id})"
+        response = await self._send(
+            "DELETE", self._address(path), context=context, log_context=log_context
+        )
         if response.status_code == 404:
             raise StorageNotFound(f"File not found: {relative}")
-        raise_for_storage(response, context=context)
+        raise_for_storage(response, context=context, log_context=log_context)
 
     # -- health ----------------------------------------------------------------------------
 
@@ -463,7 +496,16 @@ class SharePointBackend:
                         detail=f"Writing a test file failed ({written.status_code}).",
                         field=FIELD_DRIVE_ID,
                     )
-                item_id = str(written.json()["id"])
+                # Route this through the same parsing helper as everything else (finding 8):
+                # Test connection is the screen an administrator is staring at waiting for an
+                # answer, and the service layer that calls it catches only StorageError, so an
+                # unexpected shape here must become one rather than a bare KeyError that
+                # surfaces as a 500 telling the administrator nothing about which input is wrong.
+                item_id = required_str(
+                    parsed_json(written, context="Checking the connection"),
+                    "id",
+                    context="Checking the connection",
+                )
 
             versions = await self._quiet("GET", f"{self._drive}/items/{item_id}/versions")
             # A failed lookup is not evidence of anything about the library's versioning setting

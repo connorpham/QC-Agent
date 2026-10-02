@@ -243,6 +243,42 @@ async def test_error_message_never_contains_the_response_body() -> None:
     assert "Uploading srs--demo.md" in message and "400" in message
 
 
+async def test_log_context_reaches_only_the_log_never_the_raised_message(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``context`` reaches the raised ``StorageError`` message, which a client can read back
+    through ``item.error``; ``log_context`` may carry an internal identifier (a Shared Drive id,
+    a SharePoint site or library id) but must never leak into that message - only into the log
+    line (wave 2 of finding 9)."""
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"error": "not found"})
+
+    async with _client(handler) as client:
+        with caplog.at_level(logging.WARNING), pytest.raises(StorageError) as caught:
+            raise_for_storage(
+                await client.get(URL),
+                context="Uploading a file",
+                log_context="Uploading a file (drive shared-drive-test)",
+            )
+    message = str(caught.value)
+    assert "shared-drive-test" not in message
+    assert message == "Uploading a file failed (404)."
+    logged = [r.getMessage() for r in caplog.records]
+    assert any("shared-drive-test" in m for m in logged)
+
+
+async def test_log_context_defaults_to_context_when_not_given() -> None:
+    """A caller with nothing extra to log (no connection identifier involved) need not pass
+    ``log_context`` - the log line still identifies the operation."""
+    with pytest.raises(StorageError) as caught:
+        raise_for_storage(httpx.Response(500), context="Checking the connection")
+    assert (
+        str(caught.value) == "Checking the connection failed: the storage service is "
+        "temporarily unavailable. Try again."
+    )
+
+
 async def test_non_retryable_success_is_returned_untouched() -> None:
     def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(404, json={"error": "not found"})

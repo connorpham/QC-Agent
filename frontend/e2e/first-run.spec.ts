@@ -68,6 +68,7 @@ test("first run: admin signs in, enrols MFA, changes the password, sets up stora
     await page.getByRole("button", { name: "Create project" }).click();
     await page.waitForURL(/\/projects\/[0-9a-f-]{36}$/);
     await expect(page.getByRole("heading", { name: "E2E Project" })).toBeVisible();
+    await page.getByRole("tab", { name: "Overview" }).click();
     await expect(page.getByText("E2E storage")).toBeVisible();
     await expect(page.getByText("e2e-project")).toBeVisible();
     await page.getByLabel("Name of the confirming person").fill("Customer Rep");

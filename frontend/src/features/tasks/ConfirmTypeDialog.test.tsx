@@ -155,3 +155,33 @@ it("shows the conflict message when the item is no longer waiting", async () => 
   );
   expect(onConfirmed).not.toHaveBeenCalled();
 });
+
+it("reloads the task list on a 409 conflict without closing the dialog", async () => {
+  mockFetch([
+    {
+      method: "POST",
+      path: "/api/v1/upload-items/i1/confirm-type",
+      status: 409,
+      body: { detail: "This item is not waiting for a type confirmation." },
+    },
+  ]);
+  const onClose = vi.fn();
+  const onConfirmed = vi.fn();
+  const onConflict = vi.fn();
+  render(
+    <ConfirmTypeDialog
+      task={task()}
+      taxonomy={taxonomy}
+      onClose={onClose}
+      onConfirmed={onConfirmed}
+      onConflict={onConflict}
+    />,
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Keep selected type" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "This item is not waiting for a type confirmation.",
+  );
+  expect(onConflict).toHaveBeenCalledTimes(1);
+  expect(onConfirmed).not.toHaveBeenCalled();
+  expect(onClose).not.toHaveBeenCalled();
+});

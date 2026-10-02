@@ -19,6 +19,10 @@ type Props = {
   taxonomy: Taxonomy;
   onClose: () => void;
   onConfirmed: (item: Task["item"]) => void;
+  /** Called on a 409 conflict (the item is no longer waiting): the dialog stays open with its
+   * conflict message, but the stale task list behind it is refreshed so the row disappears or
+   * updates once the user closes the dialog. */
+  onConflict?: () => void;
 };
 
 export function typeTitle(taxonomy: Taxonomy, key: string | null | undefined): string {
@@ -33,7 +37,7 @@ export function typeTitle(taxonomy: Taxonomy, key: string | null | undefined): s
 /** Spec screen 6: the selected type, the check's explanation and suggestion, keep or change.
  * Without a verdict (SkipAnalyzer, or a check that failed) the dialog says so and still lets
  * the user confirm or change the type. */
-export function ConfirmTypeDialog({ task, taxonomy, onClose, onConfirmed }: Props) {
+export function ConfirmTypeDialog({ task, taxonomy, onClose, onConfirmed, onConflict }: Props) {
   const { item } = task;
   const [docType, setDocType] = useState(item.suggested_doc_type ?? item.selected_doc_type);
   const [error, setError] = useState<string | null>(null);
@@ -43,15 +47,20 @@ export function ConfirmTypeDialog({ task, taxonomy, onClose, onConfirmed }: Prop
     setBusy(true);
     setError(null);
     try {
-      const { data, error: apiError } = await api.POST(
-        "/api/v1/upload-items/{item_id}/confirm-type",
-        {
-          params: { path: { item_id: item.id } },
-          body: { doc_type: key },
-        },
-      );
+      const {
+        data,
+        error: apiError,
+        response,
+      } = await api.POST("/api/v1/upload-items/{item_id}/confirm-type", {
+        params: { path: { item_id: item.id } },
+        body: { doc_type: key },
+      });
       if (!data) {
         setError(apiErrorMessage(apiError, m.common.requestFailed));
+        // The item changed under us (another reviewer, a retry, ...): keep the conflict
+        // message on screen, but refresh the list behind the dialog so the stale row is not
+        // left offering a review that will only 409 again.
+        if (response.status === 409) onConflict?.();
         return;
       }
       onConfirmed(data);

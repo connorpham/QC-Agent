@@ -77,6 +77,7 @@ export function TasksPage() {
             setConfirmed(true);
             tasks.reload();
           }}
+          onConflict={() => tasks.reload()}
         />
       ) : null}
     </>

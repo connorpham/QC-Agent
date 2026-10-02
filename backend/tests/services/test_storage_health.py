@@ -1,5 +1,6 @@
 """The public /health storage check: one word, no details, and cached."""
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -84,6 +85,63 @@ async def test_inactive_connections_are_not_checked(
     )
     await storage_health.storage_check(db, settings)
     assert Stub.calls == 1  # only the active default
+
+
+class SlowStub:
+    """A probe that yields control (``asyncio.sleep``) before answering, so genuinely concurrent
+    callers actually overlap in time instead of completing one after another before the next one
+    is even scheduled."""
+
+    calls = 0
+    healthy = True
+
+    def __init__(self, *_args: object) -> None:
+        pass
+
+    async def health(self, *, probe_write: bool = False) -> HealthStatus:
+        SlowStub.calls += 1
+        await asyncio.sleep(0.01)
+        return HealthStatus(ok=SlowStub.healthy, detail="x", field="drive_id")
+
+
+@pytest.fixture(autouse=True)
+def _reset_slow_stub() -> None:
+    SlowStub.calls = 0
+    SlowStub.healthy = True
+
+
+async def test_concurrent_cold_start_callers_share_a_single_probe(
+    db: AsyncSession, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Five hundred concurrent anonymous callers hitting an empty cache must not turn into five
+    hundred outbound provider probes (finding 3) - counted here, not timed."""
+    monkeypatch.setattr(storage_health, "connection_backend", lambda *_: SlowStub())
+    results = await asyncio.gather(*(storage_health.storage_check(db, settings) for _ in range(50)))
+    assert results == ["ok"] * 50
+    assert SlowStub.calls == 1  # one connection, probed exactly once despite 50 concurrent callers
+
+
+async def test_concurrent_callers_after_expiry_get_the_stale_verdict_not_a_pile_of_probes(
+    db: AsyncSession, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once a verdict exists, an expiry must not block every concurrent caller behind the
+    recompute: all but the one caller that performs it are served the previous verdict
+    immediately, and only one recompute happens, not twenty."""
+    clock = [1000.0]
+    monkeypatch.setattr(storage_health, "connection_backend", lambda *_: SlowStub())
+    first = await storage_health.storage_check(db, settings, now=lambda: clock[0])
+    assert first == "ok"
+    assert SlowStub.calls == 1
+
+    clock[0] += storage_health.CACHE_SECONDS + 1
+    SlowStub.healthy = False  # the next real probe would now report unhealthy
+    results = await asyncio.gather(
+        *(storage_health.storage_check(db, settings, now=lambda: clock[0]) for _ in range(20))
+    )
+    # at most one of the twenty calls actually performed (and got) the fresh, unhealthy verdict;
+    # every other concurrent caller was served the previous ("ok") verdict rather than waiting
+    assert results.count("ok") >= 19
+    assert SlowStub.calls == 2  # exactly one more probe across the whole burst, not twenty
 
 
 async def test_the_result_is_cached(
